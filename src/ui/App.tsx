@@ -129,6 +129,7 @@ export function App() {
     segments: segmentsOf(activeModel),
     view: state.view,
     following: state.following ?? follow(activeModel, activeModel.main.points[0], null),
+    position: activeModel.main.points[0],
     awayM: state.awayM,
     rests: state.rests,
     liveGps: state.liveGps,

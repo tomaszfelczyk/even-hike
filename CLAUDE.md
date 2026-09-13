@@ -55,6 +55,16 @@ Three ways to run it, cheapest first:
 
 `src/storage.ts` picks the backing store: the host on the glasses, `localStorage` in a browser tab. That is what lets routes be imported and deleted while developing the page with no hardware. Reads await the bridge rather than guessing, so the page cannot read one store while the glasses write another.
 
+## The image is the expensive part
+
+Text updates are cheap; the profile is 288x144, about **41 KB before LZ4**, and it crosses a BLE link. `pushProfile` therefore throttles hard where `textContainerUpgrade` does not:
+
+- It only pushes when the marker crosses a **pixel** — on a 20 km route that is 69 m of walking.
+- At most one push every `PROFILE_MIN_INTERVAL_MS` (4 s), and never two at once. A burst of fixes schedules **one** trailing push for the newest state rather than queueing a dozen stale ones.
+- A failed push clears the dedupe key, so the next attempt is not suppressed by a frame that never arrived.
+
+If the profile looks frozen on device, this is the first place to look — the symptom of pushing too often is a picture that stops keeping pace, not one that errors.
+
 ## Hike history
 
 `src/lib/history.ts` records what happened, as distinct from the route, which is the plan. Comparing the two is the point of keeping it: `elapsedMs` includes rest, `movingMs` does not, and `walkedDistance` comes from the trace rather than the plan.

@@ -7,7 +7,7 @@
  * testable without hardware.
  */
 
-import { ascent, hikingTime, type LatLon } from './geo.ts'
+import { ascent, bearing, compassPoint, hikingTime, type LatLon } from './geo.ts'
 import type { Following } from './follow.ts'
 import { followedVariant } from './follow.ts'
 import {
@@ -27,6 +27,8 @@ export interface HudInput {
   /** 0 is the whole walk; 1..n are the legs between stops. */
   view: number
   following: Following | null
+  /** Where the walker is, so a direction back to the line can be given. */
+  position?: LatLon | null
   /** Metres to the route when the walker is nowhere near it, else null. */
   awayM: number | null
   rests: Rest[]
@@ -38,6 +40,8 @@ export interface HudInput {
 
 export interface HudProfile {
   points: RoutePoint[]
+  /** Metres covered by the shown span, so callers can map metres to pixels. */
+  span: number
   /** Distance into the shown span, or undefined when the walker is outside it. */
   atMeters?: number
   marks: number[]
@@ -130,7 +134,14 @@ function statusText(input: HudInput): string {
   if (input.notice) return input.notice
   if (input.awayM !== null) return 'not on this route   (tap to preview, double-tap to exit)'
   if (input.following === null) return 'no fix'
-  if (!input.following.onRoute) return `OFF ROUTE  ${input.following.offset.toFixed(0)} m`
+  if (!input.following.onRoute) {
+    // A distance with no direction is not actionable. A compass point is,
+    // and it is the one bearing that always makes sense: back to the line.
+    const back = input.position == null
+      ? ''
+      : `   back ${compassPoint(bearing(input.position, input.following.nearest))}`
+    return `OFF ROUTE  ${input.following.offset.toFixed(0)} m${back}`
+  }
 
   const variant = followedVariant(input.model, input.following)
   if (variant !== null) {
@@ -192,6 +203,7 @@ function profileOf(input: HudInput): HudProfile {
 
   return {
     points,
+    span,
     ...(inside ? { atMeters: local } : {}),
     marks: [...model.stops.map(s => s.along), ...model.variants.map(v => v.branchAlong)]
       .map(shift).filter(within),

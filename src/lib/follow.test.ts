@@ -111,3 +111,27 @@ test('a notice outranks everything else on the status line', () => {
   })
   assert.equal(view.status, 'TAKING LONG WAY')
 })
+
+test('off route gives a direction back, not just a distance', () => {
+  // A hundred metres north of the line near the start.
+  const onLine = model.main.points[200]
+  const strayed = { lat: onLine.lat + 0.0009, lon: onLine.lon }
+  const following = follow(model, strayed, null)!
+  assert.equal(following.onRoute, false)
+
+  const view = hudView({
+    model, routeName: 'Tatry', segments: segmentsOf(model), view: 0,
+    following, position: strayed, awayM: null, rests: [], liveGps: true, now: Date.now(),
+  })
+  assert.match(view.status, /^OFF ROUTE {2}\d+ m {3}back [NSEW]{1,3}$/, view.status)
+})
+
+test('without a position there is no direction to offer, and none is invented', () => {
+  const onLine = model.main.points[200]
+  const following = follow(model, { lat: onLine.lat + 0.0009, lon: onLine.lon }, null)!
+  const view = hudView({
+    model, routeName: 'Tatry', segments: segmentsOf(model), view: 0,
+    following, awayM: null, rests: [], liveGps: true, now: Date.now(),
+  })
+  assert.match(view.status, /^OFF ROUTE {2}\d+ m$/)
+})

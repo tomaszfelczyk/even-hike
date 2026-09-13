@@ -18,6 +18,8 @@ export interface Following {
   along: number
   /** Metres from whichever line is being followed. */
   offset: number
+  /** The nearest point on that line — what to walk towards when off route. */
+  nearest: LatLon
   onRoute: boolean
   /** True only on the update where the followed line changed. */
   changed: boolean
@@ -38,6 +40,7 @@ interface Candidate {
   line: FollowedLine
   along: number
   offset: number
+  nearest: LatLon
 }
 
 const sameLine = (a: FollowedLine, b: FollowedLine) =>
@@ -65,7 +68,7 @@ function variantCandidate(variant: Variant, index: number, position: LatLon): Ca
     ? to - progress * (to - from)
     : from + progress * (to - from)
 
-  return { line: { kind: 'variant', index }, along, offset: near.offset }
+  return { line: { kind: 'variant', index }, along, offset: near.offset, nearest: near.point }
 }
 
 /**
@@ -86,7 +89,12 @@ export function follow(
   const candidates: Candidate[] = []
   const onMain = nearestOnPath(model.main.points, position, model.mainCum)
   if (onMain !== null) {
-    candidates.push({ line: { kind: 'main' }, along: onMain.along, offset: onMain.offset })
+    candidates.push({
+      line: { kind: 'main' },
+      along: onMain.along,
+      offset: onMain.offset,
+      nearest: onMain.point,
+    })
   }
   model.variants.forEach((variant, index) => {
     const candidate = variantCandidate(variant, index, position)
@@ -106,6 +114,7 @@ export function follow(
     line: best.line,
     along: best.along,
     offset: best.offset,
+    nearest: best.nearest,
     onRoute: best.offset <= offRouteM,
     changed: previous !== null && !sameLine(best.line, previous.line),
   }

@@ -103,6 +103,16 @@ const NOTICE_MS = 12_000
  */
 const SESSION_SAVE_MS = 30_000
 
+/**
+ * Least time between two image pushes.
+ *
+ * The profile is 288x144 — about 41 KB before the SDK's LZ4 pass — and it
+ * crosses a BLE link. Pushing on every fix queues them faster than they drain
+ * and the picture stops keeping pace with the walker. Text updates are cheap
+ * and stay unthrottled.
+ */
+const PROFILE_MIN_INTERVAL_MS = 4000
+
 let view = 0
 let position!: LatLon
 let following: Following | null = null
@@ -110,7 +120,10 @@ let notice: string | null = null
 let noticeTimer: ReturnType<typeof setTimeout> | null = null
 let liveGps = false
 let awayM: number | null = null
-let lastProfileColumn = -1
+let lastProfileKey = ''
+let lastProfileAt = 0
+let profileBusy = false
+let profileRetry: ReturnType<typeof setTimeout> | null = null
 let session: HikeSession | null = null
 let sessionSavedAt = 0
 
@@ -150,7 +163,7 @@ async function selectRoute(chosen: RouteRecord): Promise<void> {
   notice = null
   liveGps = false
   awayM = null
-  lastProfileColumn = -1
+  lastProfileKey = ''
   relocate(position)
 
   void bridge.setLocalStorage(SELECTED_KEY, chosen.id)
@@ -213,6 +226,7 @@ function currentHud(): HudView {
     segments,
     view,
     following,
+    position,
     awayM,
     rests,
     liveGps,
@@ -242,25 +256,55 @@ function syncRestTimer(): void {
 }
 
 async function pushProfile(hud: HudView, force = false): Promise<void> {
-  const column = Math.round(((hud.profile.atMeters ?? -1) / 1000) * 100) + view * 10_000
-  if (!force && column === lastProfileColumn) return
-  lastProfileColumn = column
+  // The marker only moves visibly once it crosses a pixel, and the profile is
+  // 288 wide — on a 20 km route that is 69 m of walking per pixel.
+  const marker = hud.profile.atMeters === undefined || hud.profile.span <= 0
+    ? -1
+    : Math.round((hud.profile.atMeters / hud.profile.span) * (PROFILE_W - 1))
+  const key = `${view}:${marker}`
+  if (!force && key === lastProfileKey) return
 
-  const bitmap = renderProfile(hud.profile.points, {
-    width: PROFILE_W,
-    height: PROFILE_H,
-    ...(hud.profile.atMeters === undefined ? {} : { atMeters: hud.profile.atMeters }),
-    marks: hud.profile.marks,
-    minorMarks: hud.profile.minorMarks,
-  })
-  const result = await bridge.updateImageRawData(new ImageRawDataUpdate({
-    containerID: PROFILE,
-    containerName: 'profile',
-    imageData: bitmap.data,
-  }))
-  // Firmware renders 4-level grey, so the bitmap's tones are quantised there.
-  if (result !== ImageRawDataUpdateResult.success) {
-    console.error('updateImageRawData failed:', result)
+  const now = Date.now()
+  if (!force && (profileBusy || now - lastProfileAt < PROFILE_MIN_INTERVAL_MS)) {
+    // Come back for the newest state rather than queueing this one, so a burst
+    // of fixes costs one push instead of a dozen.
+    if (profileRetry === null) {
+      const wait = profileBusy
+        ? PROFILE_MIN_INTERVAL_MS
+        : Math.max(250, PROFILE_MIN_INTERVAL_MS - (now - lastProfileAt))
+      profileRetry = setTimeout(() => {
+        profileRetry = null
+        void pushProfile(currentHud())
+      }, wait)
+    }
+    return
+  }
+
+  lastProfileKey = key
+  lastProfileAt = now
+  profileBusy = true
+  try {
+    const bitmap = renderProfile(hud.profile.points, {
+      width: PROFILE_W,
+      height: PROFILE_H,
+      ...(hud.profile.atMeters === undefined ? {} : { atMeters: hud.profile.atMeters }),
+      marks: hud.profile.marks,
+      minorMarks: hud.profile.minorMarks,
+    })
+    const result = await bridge.updateImageRawData(new ImageRawDataUpdate({
+      containerID: PROFILE,
+      containerName: 'profile',
+      imageData: bitmap.data,
+    }))
+    // Firmware renders 4-level grey, so the bitmap's tones are quantised there.
+    if (result !== ImageRawDataUpdateResult.success) {
+      console.error('updateImageRawData failed:', result, `${bitmap.data.length} bytes`)
+      // Let the next attempt through rather than sitting on a key that never
+      // reached the glasses.
+      lastProfileKey = ''
+    }
+  } finally {
+    profileBusy = false
   }
 }
 
