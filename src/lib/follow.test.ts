@@ -142,7 +142,9 @@ test('the display is quiet when there is nothing to say', () => {
     model, routeName: 'Tatry', segments: segmentsOf(model), view: 0,
     following, awayM: null, rests: [], liveGps: true, now: Date.now(),
   })
-  assert.equal(view.status, '', 'a HUD that is always talking stops being read')
+  // Not silent, but not repeating the headline either: the secondary number,
+  // dim, and easy to ignore.
+  assert.match(view.status, /^\d+\.\d km left {3}\d+h\d\d$/, view.status)
   assert.equal(view.brightness, 2, 'and it dims')
 })
 
@@ -155,7 +157,7 @@ test('the headline leads with the next stop, not the finish', () => {
   const [distance, to] = view.stats.split('\n')
   assert.match(distance, /^\d+\.\d km$/)
   assert.equal(to, 'to Murowaniec', 'the thing a walker can act on')
-  assert.match(view.stats, /km left/, 'the total is still there, lower down')
+  assert.match(view.status, /km left/, 'the total moves to the status line')
 })
 
 test('brightness rises for things that must be acted on', () => {
@@ -177,3 +179,49 @@ test('brightness rises for things that must be acted on', () => {
   assert.equal(noticed.brightness, 4, 'a banner')
 })
 function quietFollowing() { return follow(model, model.main.points[600], null)! }
+
+/**
+ * The stats container is ~100 px tall and a fourth line is clipped on the
+ * device — "preview mode" appeared cut in half. Nothing here can see a screen,
+ * so the budget is asserted instead.
+ */
+test('the headline never exceeds three lines, in any state', () => {
+  const base = {
+    model, routeName: 'Tatry', segments: segmentsOf(model), view: 0,
+    awayM: null, rests: [], liveGps: true, now: Date.now(),
+  }
+  const walking = follow(model, model.main.points[600], null)!
+  const onVariant = follow(model, variant.path.points[variant.fromIndex + 5], null)!
+
+  const states: [string, Parameters<typeof hudView>[0]][] = [
+    ['walking', { ...base, following: walking }],
+    ['on a variant', { ...base, following: onVariant }],
+    ['far from the route', { ...base, following: walking, awayM: 338_000 }],
+    ['no fix', { ...base, following: null }],
+    ['a segment view', { ...base, following: walking, view: 1 }],
+    ['resting', {
+      ...base,
+      following: walking,
+      rests: [{ startedAt: Date.now() - 600_000, endedAt: null, along: 4000, lat: 49.24, lon: 20, ele: 1512, at: 'Murowaniec' }],
+    }],
+  ]
+
+  for (const [label, input] of states) {
+    const lines = hudView(input).stats.split('\n')
+    assert.ok(lines.length <= 3, `${label}: ${lines.length} lines — ${JSON.stringify(lines)}`)
+  }
+})
+
+test('a far route names the one actually underfoot', () => {
+  const walking = follow(model, model.main.points[600], null)!
+  const view = hudView({
+    model, routeName: 'Tatry', segments: segmentsOf(model), view: 0,
+    following: walking, awayM: 338_000, rests: [], liveGps: true, now: Date.now(),
+    nearbyRoute: { name: 'Test route', distanceM: 180 },
+  })
+  assert.match(view.status, /"Test route" is 0\.2 km away, pick it from the menu/)
+  assert.equal(hudView({
+    model, routeName: 'Tatry', segments: segmentsOf(model), view: 0,
+    following: walking, awayM: 338_000, rests: [], liveGps: true, now: Date.now(),
+  }).status, 'not on this route   (tap to preview, double-tap to exit)', 'and says nothing when there is none')
+})

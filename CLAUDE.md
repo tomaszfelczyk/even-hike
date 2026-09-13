@@ -76,9 +76,11 @@ If the profile looks frozen on device, this is the first place to look — the s
 
 There are no haptics and no sound in the SDK, so **text brightness (0..4) is the only attention channel**. `hudView` returns a `brightness` with the strings: 2 while walking, 4 for a line-change banner, being off route, an imminent junction, or standing at a stop.
 
-The headline leads with the **next stop**, not the finish — `3.2 km / to Murowaniec / 1h10`, with the total on a lower line. The finish is trivia until the last leg.
+The headline leads with the **next stop**, not the finish — `3.2 km / to Murowaniec / 1h10`. The finish is trivia until the last leg, so the total sits on the status line instead, dim.
 
-When nothing needs saying the status line is **empty**. It used to repeat the next stop that the headline already gives, and a HUD that is always talking stops being read.
+**The headline is three lines, never more.** Its container is ~100 px and a fourth line is silently clipped on the device — that is how `preview mode` came to be sliced in half. Nothing in this repo can see a screen, so there is a test asserting the budget across every state: walking, on a variant, far from the route, no fix, a segment view, resting. Add a state, keep it to three lines.
+
+When the selected route is far away the status line names a **closer loaded route** instead of only reporting the distance. Arriving at a trailhead with yesterday's route still selected is the normal case, because `route:selected` is remembered.
 
 ## Hike history
 

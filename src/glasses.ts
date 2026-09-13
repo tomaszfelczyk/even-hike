@@ -26,7 +26,7 @@ import {
 import { renderProfile, toBase64, toRawData } from './lib/profile.ts'
 import { follow, type Following } from './lib/follow.ts'
 import { hudView, lineChangeNotice, type HudView } from './lib/hud.ts'
-import { cumulativeDistances, type LatLon } from './lib/geo.ts'
+import { cumulativeDistances, nearestOnPath, type LatLon } from './lib/geo.ts'
 
 const TITLE = 1
 const PROFILE = 2
@@ -239,11 +239,35 @@ function currentHud(): HudView {
     following,
     position,
     awayM,
+    nearbyRoute: nearbyRoute(),
     rests,
     liveGps,
     notice,
     now: Date.now(),
   })
+}
+
+/**
+ * The closest other loaded route to where we are, when the selected one is far.
+ *
+ * Arriving at a trailhead with yesterday's route still selected is the normal
+ * case — `route:selected` is remembered — so the display should name the one
+ * actually underfoot rather than just reporting a large number.
+ */
+function nearbyRoute(): { name: string; distanceM: number } | null {
+  if (awayM === null || position === undefined) return null
+  let best: { name: string; distanceM: number } | null = null
+  for (const candidate of getState().routes) {
+    if (candidate.id === source.id) continue
+    const built = modelFor(candidate)
+    if (built === null) continue
+    const near = nearestOnPath(built.main.points, position, built.mainCum)
+    if (near === null || near.offset > awayM) continue
+    if (best === null || near.offset < best.distanceM) {
+      best = { name: candidate.name, distanceM: near.offset }
+    }
+  }
+  return best
 }
 
 /** Mirror the live state so the phone page renders the same HUD. */
@@ -444,7 +468,9 @@ const result = await bridge.createStartUpPageContainer(new CreateStartUpPageCont
       content: initialHud.title, isEventCapture: 0,
     }),
     new TextContainerProperty({
-      xPosition: 300, yPosition: 28, width: 276, height: PROFILE_H,
+      // Runs down to the status line rather than matching the profile: three
+      // lines of text need more than the 96 px the profile occupies.
+      xPosition: 300, yPosition: 28, width: 276, height: 100,
       containerID: STATS, containerName: 'stats', zOrderIndex: 3,
       content: initialHud.stats, isEventCapture: 0,
     }),

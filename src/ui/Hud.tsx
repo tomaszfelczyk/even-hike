@@ -71,7 +71,7 @@ export function Hud({ view }: { view: HudView }) {
         />
       </Region>
 
-      <Region x={300} y={28} w={276} h={PROFILE_H}>
+      <Region x={300} y={28} w={276} h={100}>
         <Line size={17} brightness={view.brightness}>{view.stats}</Line>
       </Region>
 

@@ -31,6 +31,8 @@ export interface HudInput {
   position?: LatLon | null
   /** Metres to the route when the walker is nowhere near it, else null. */
   awayM: number | null
+  /** A different loaded route that is close by, when this one is not. */
+  nearbyRoute?: { name: string; distanceM: number } | null
   rests: Rest[]
   liveGps: boolean
   /** Transient message that outranks everything else on the status line. */
@@ -93,12 +95,14 @@ function statsText(input: HudInput): string {
   const resting = activeRest(input.rests)
   if (resting !== null) {
     // While resting, the clock on this rest is the only number that matters.
-    return [
-      `RESTING ${mins(restDurationMs(resting, input.now))}`,
+    const where = [
       resting.at === undefined ? '' : foldAscii(resting.at),
       resting.ele === undefined ? '' : `${resting.ele.toFixed(0)} m`,
-      '',
-      `${mins(totalRestMs(input.rests, input.now))} rested today`,
+    ].filter(Boolean).join('  ')
+    return [
+      `RESTING ${mins(restDurationMs(resting, input.now))}`,
+      where,
+      `${mins(totalRestMs(input.rests, input.now))} today`,
     ].join('\n')
   }
 
@@ -108,9 +112,7 @@ function statsText(input: HudInput): string {
     return [
       `${(segment.distance / 1000).toFixed(1)} km`,
       `climb ${segment.ascent.toFixed(0)} m`,
-      `${hhmm(segment.time)} walking`,
-      '',
-      `leg ${input.view} of ${input.segments.length}`,
+      `${hhmm(segment.time)}   leg ${input.view}/${input.segments.length}`,
     ].join('\n')
   }
 
@@ -118,12 +120,11 @@ function statsText(input: HudInput): string {
     const away = input.awayM >= 10_000
       ? `${(input.awayM / 1000).toFixed(0)} km`
       : `${(input.awayM / 1000).toFixed(1)} km`
-    return ['route is', `${away} away`, '', 'preview mode'].join('\n')
+    return [away, 'from route', 'preview'].join('\n')
   }
 
   if (input.following === null) return 'no fix'
   const along = input.following.along
-  const left = remainingFrom(input.model, along)
 
   // The next stop is what a walker can act on; the finish is trivia until the
   // last leg. Lead with whichever is actually next.
@@ -137,12 +138,12 @@ function statsText(input: HudInput): string {
     ? leg.walking
     : Math.max(0, leg.walking - remainingFrom(input.model, target.at).walking)
 
+  // Three lines, never more. The container is ~100 px tall and a fourth line
+  // is clipped on the device; the total lives on the status line instead.
   return [
     `${(toTarget / 1000).toFixed(1)} km`,
     `to ${target.name}`,
     hhmm(legTime),
-    '',
-    `${(left.distance / 1000).toFixed(1)} km left  ${hhmm(left.total)}`,
   ].join('\n')
 }
 
@@ -168,7 +169,14 @@ function statusText(input: HudInput): string {
   // A change of line, or a drift off it, outranks everything a walker could
   // otherwise be reading about.
   if (input.notice) return input.notice
-  if (input.awayM !== null) return 'not on this route   (tap to preview, double-tap to exit)'
+  if (input.awayM !== null) {
+    // Arriving at a trailhead with yesterday's route still selected is the
+    // normal case, not an error — say which one is actually underfoot.
+    const near = input.nearbyRoute
+    return near == null
+      ? 'not on this route   (tap to preview, double-tap to exit)'
+      : `not on this route — "${foldAscii(near.name)}" is ${(near.distanceM / 1000).toFixed(1)} km away, pick it from the menu`
+  }
   if (input.following === null) return 'no fix'
   if (!input.following.onRoute) {
     // A distance with no direction is not actionable. A compass point is,
@@ -212,9 +220,11 @@ function statusText(input: HudInput): string {
     return `at ${foldAscii(here.name)}   long-press to rest${against}`
   }
 
-  // Nothing to say. The stats already lead with the next stop, so repeating it
-  // here would be noise — and a HUD that is always talking stops being read.
-  return input.liveGps ? '' : 'tap to advance, double-tap to exit'
+  // Nothing urgent. The headline covers the next stop, so this carries the
+  // secondary number instead of repeating it — dim, and easy to ignore.
+  const left = remainingFrom(input.model, along)
+  const total = `${(left.distance / 1000).toFixed(1)} km left   ${hhmm(left.total)}`
+  return input.liveGps ? total : `${total}   (tap to advance, double-tap to exit)`
 }
 
 function profileOf(input: HudInput): HudProfile {
