@@ -39,13 +39,4 @@ export const BUILT_IN_ROUTES: RouteRecord[] = [
     restSeconds: 15 * 60,
     builtIn: true,
   },
-  {
-    id: 'tatry-long',
-    name: 'Kuźnice - Palenica (long)',
-    paths: longApproach.paths,
-    waypoints: longApproach.waypoints,
-    stopNames: ['Murowaniec', 'PTTK Pięć Stawów'],
-    restSeconds: 15 * 60,
-    builtIn: true,
-  },
 ]

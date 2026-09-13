@@ -55,6 +55,16 @@ Three ways to run it, cheapest first:
 
 `src/storage.ts` picks the backing store: the host on the glasses, `localStorage` in a browser tab. That is what lets routes be imported and deleted while developing the page with no hardware. Reads await the bridge rather than guessing, so the page cannot read one store while the glasses write another.
 
+## Same walk, not a second route
+
+`src/lib/merge.ts` decides whether an imported GPX is a new route or another way round one already held. Same start, same finish, same stops (within 150 m — trailhead and hut pins wander between exports) means the same walk, in either direction, since two exports of one traverse routinely run opposite ways.
+
+When it matches, `mergeAsVariants` folds in only the legs that differ and drops the ones already held, so a shared leg is never stored twice — a duplicate would otherwise surface as a zero-delta "alternative". This is the point of it: the choice then reaches the walker **on the glasses at the junction**, instead of sitting in a route picker they would have to stop and open.
+
+`samePath` is what separates a shared leg from two ways round, and endpoints alone cannot do it — sharing both ends is exactly what makes two ways round *different*. Lengths have to agree as well (within 5%).
+
+The bundled `tatry-zawrat` follows the same rule by hand: the long approach to Murowaniec is an extra path on that record, not a route of its own.
+
 ## Multiple routes
 
 `src/routes.ts` holds the bundled routes as `RouteSource` records — id, name, GPX text, optional alternatives, stop names, planned rest. `selectRoute()` in `main.ts` rebuilds every route-dependent value from one of them, so adding a route is one entry in that array.

@@ -11,6 +11,7 @@ import { parseGpx } from '../lib/gpx.ts'
 import {
   deleteRoute, loadRoutes, routeIdFor, saveRoute, type RouteRecord,
 } from '../lib/route-store.ts'
+import { findSameRoute, mergeAsVariants } from '../lib/merge.ts'
 import { ElevationProfile } from './ElevationProfile.tsx'
 
 const km = (metres: number) => `${(metres / 1000).toFixed(1)} km`
@@ -38,6 +39,7 @@ export function App() {
   const state = useSyncExternalStore(subscribe, getState)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
 
   useEffect(() => { void refreshRoutes() }, [])
 
@@ -50,13 +52,33 @@ export function App() {
   async function importGpx(file: File, replacing?: RouteRecord): Promise<void> {
     setBusy(replacing?.id ?? 'new')
     setError(null)
+    setNotice(null)
     try {
       const doc = parseGpx(await file.text())
       if (doc.paths.length === 0) throw new Error('no tracks or routes in that file')
 
-      const name = replacing?.name
-        ?? doc.paths[0].name
-        ?? file.name.replace(/\.gpx$/i, '')
+      const fallbackName = doc.paths[0].name || file.name.replace(/\.gpx$/i, '')
+
+      // Same ends and same stops means this is another way round a walk we
+      // already have. Merging keeps the choice on the glasses at the junction
+      // rather than hiding it in the route picker.
+      if (replacing === undefined) {
+        const sibling = findSameRoute(state.routes, doc.paths)
+        if (sibling !== null) {
+          const { route, added } = mergeAsVariants(sibling, doc.paths, fallbackName)
+          if (added.length === 0) {
+            setNotice(`Already part of "${sibling.name}" — nothing new in that file`)
+          } else {
+            await saveRoute(store, route)
+            await refreshRoutes()
+            setState({ routeId: route.id })
+            setNotice(`Added ${added.join(', ')} to "${sibling.name}" as an alternative`)
+          }
+          return
+        }
+      }
+
+      const name = replacing?.name ?? fallbackName
       const record: RouteRecord = {
         id: replacing?.id ?? routeIdFor(name, state.routes.map(r => r.id)),
         name,
@@ -105,6 +127,7 @@ export function App() {
         onFile={file => void importGpx(file)}
       />
       {error !== null && <Text variant="detail" style={{ color: 'crimson' }}>{error}</Text>}
+      {notice !== null && <Text variant="detail">{notice}</Text>}
       {restedMs > 0 && (
         <Text variant="detail">{Math.round(restedMs / 60_000)} min rested on this route</Text>
       )}
