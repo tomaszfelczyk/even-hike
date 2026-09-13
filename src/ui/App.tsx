@@ -13,6 +13,10 @@ import {
 } from '../lib/route-store.ts'
 import { findSameRoute, mergeAsVariants } from '../lib/merge.ts'
 import { ElevationProfile } from './ElevationProfile.tsx'
+import { Hud } from './Hud.tsx'
+import { hudView } from '../lib/hud.ts'
+import { follow } from '../lib/follow.ts'
+import { displayTitle } from '../lib/route.ts'
 
 const km = (metres: number) => `${(metres / 1000).toFixed(1)} km`
 const hhmm = (seconds: number) => {
@@ -114,6 +118,23 @@ export function App() {
 
   const restedMs = totalRestMs(state.rests, Date.now())
 
+  // The live HUD, from the same function the glasses render through. Without a
+  // fix there is nothing to follow, so the mirror sits at the route's start —
+  // which is also what makes it useful in a browser with no hardware.
+  const activeModel = models.get(state.routeId) ?? null
+  const hud = activeModel === null ? null : hudView({
+    model: activeModel,
+    routeName: displayTitle(state.routes.find(r => r.id === state.routeId)?.name ?? ''),
+    segments: segmentsOf(activeModel),
+    view: state.view,
+    following: state.following ?? follow(activeModel, activeModel.main.points[0], null),
+    awayM: state.awayM,
+    rests: state.rests,
+    liveGps: state.liveGps,
+    notice: state.notice,
+    now: Date.now(),
+  })
+
   return (
     <main style={{ maxWidth: 720, margin: '0 auto', padding: 16, display: 'grid', gap: 16 }}>
       <header style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
@@ -128,6 +149,18 @@ export function App() {
       />
       {error !== null && <Text variant="detail" style={{ color: 'crimson' }}>{error}</Text>}
       {notice !== null && <Text variant="detail">{notice}</Text>}
+
+      {hud !== null && (
+        <Card>
+          <CardHeader style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Text as="h2" variant="title-2">On the glasses</Text>
+            <Text variant="detail">576 x 288</Text>
+          </CardHeader>
+          <CardContent>
+            <Hud view={hud} />
+          </CardContent>
+        </Card>
+      )}
       {restedMs > 0 && (
         <Text variant="detail">{Math.round(restedMs / 60_000)} min rested on this route</Text>
       )}

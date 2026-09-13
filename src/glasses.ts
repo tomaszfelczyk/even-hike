@@ -18,16 +18,11 @@ import type { RouteRecord } from './lib/route-store.ts'
 import { store } from './storage.ts'
 import { provideBridge } from './storage.ts'
 import { modelFor } from './build-route.ts'
-import {
-  displayTitle, foldAscii, formatDelta, nextDecision, nextStop,
-  nextWaypoint, plannedRestBefore, progressOn, segmentsOf, stopNear,
-  type RouteModel, type Segment,
-} from './lib/route.ts'
-import {
-  activeRest, parseRests, restDurationMs, serializeRests, toggleRest, totalRestMs,
-  type Rest,
-} from './lib/rests.ts'
+import { displayTitle, foldAscii, segmentsOf, stopNear, type RouteModel, type Segment } from './lib/route.ts'
+import { activeRest, parseRests, serializeRests, toggleRest, type Rest } from './lib/rests.ts'
 import { renderProfile } from './lib/profile.ts'
+import { follow, type Following } from './lib/follow.ts'
+import { hudView, lineChangeNotice, type HudView } from './lib/hud.ts'
 import { cumulativeDistances, type LatLon } from './lib/geo.ts'
 
 const TITLE = 1
@@ -37,9 +32,6 @@ const STATUS = 4
 
 const PROFILE_W = 288
 const PROFILE_H = 144
-
-/** How close a sight must be before it takes over the status line. */
-const SIGHT_ANNOUNCE_M = 400
 
 /**
  * How close a fix must be before it is treated as navigating this route.
@@ -96,13 +88,17 @@ let viewCount!: number
 let restKey!: string
 let rests!: Rest[]
 
+/** How long a line-change banner holds the status line. */
+const NOTICE_MS = 12_000
+
 let view = 0
 let position!: LatLon
+let following: Following | null = null
+let notice: string | null = null
+let noticeTimer: ReturnType<typeof setTimeout> | null = null
 let liveGps = false
 let awayM: number | null = null
 let lastProfileColumn = -1
-
-const currentSegment = (): Segment | null => (view === 0 ? null : segments[view - 1])
 
 /**
  * Build everything that depends on the chosen route.
@@ -126,9 +122,12 @@ async function selectRoute(chosen: RouteRecord): Promise<void> {
 
   view = 0
   position = model.main.points[0]
+  following = null
+  notice = null
   liveGps = false
   awayM = null
   lastProfileColumn = -1
+  relocate(position)
 
   void bridge.setLocalStorage(SELECTED_KEY, chosen.id)
   setState({ routeId: chosen.id, rests })
@@ -142,14 +141,7 @@ const initial = routes().find(r => r.id === remembered)
 if (initial === undefined) return 'failed'
 await selectRoute(initial)
 
-/* ---------- formatting ---------- */
-
-// Straight Tobler via `hikingTime`; no terrain fudge factor.
-const hhmm = (seconds: number) => {
-  const t = Math.round(seconds / 60)
-  return `${Math.floor(t / 60)}h${String(t % 60).padStart(2, '0')}`
-}
-const mins = (ms: number) => `${Math.round(ms / 60_000)}m`
+/* ---------- rendering ---------- */
 
 /** Point at a given distance along the main route, for stepping without GPS. */
 function pointAt(along: number): LatLon {
@@ -170,6 +162,46 @@ function pointAt(along: number): LatLon {
   }
 }
 
+/** Re-locate against the route and its alternatives, and announce a change. */
+function relocate(position: LatLon): void {
+  const next = follow(model, position, following)
+  following = next
+  if (next !== null) {
+    const message = lineChangeNotice(model, next)
+    if (message !== null) {
+      notice = message
+      if (noticeTimer !== null) clearTimeout(noticeTimer)
+      // Long enough to read while walking, short enough not to bury the
+      // navigation it is sitting on top of.
+      noticeTimer = setTimeout(() => {
+        notice = null
+        publish()
+        void redraw(true)
+      }, NOTICE_MS)
+    }
+  }
+}
+
+function currentHud(): HudView {
+  return hudView({
+    model,
+    routeName: displayTitle(source.name),
+    segments,
+    view,
+    following,
+    awayM,
+    rests,
+    liveGps,
+    notice,
+    now: Date.now(),
+  })
+}
+
+/** Mirror the live state so the phone page renders the same HUD. */
+function publish(): void {
+  setState({ view, following, awayM, liveGps, notice, rests })
+}
+
 /**
  * While resting, nothing else generates an event, so the clock has to drive the
  * redraw itself. 30 s keeps the displayed minute from ever being stale, at one
@@ -185,122 +217,17 @@ function syncRestTimer(): void {
   }
 }
 
-function statsText(): string {
-  const resting = activeRest(rests)
-  if (resting !== null) {
-    // While resting, the clock on this rest is the only number that matters.
-    return [
-      `RESTING ${mins(restDurationMs(resting, Date.now()))}`,
-      resting.at === undefined ? '' : foldAscii(resting.at),
-      resting.ele === undefined ? '' : `${resting.ele.toFixed(0)} m`,
-      '',
-      `${mins(totalRestMs(rests, Date.now()))} rested today`,
-    ].join('\n')
-  }
-
-  const segment = currentSegment()
-  if (segment !== null) {
-    // A segment is a fixed span: describe the leg itself, not progress through it.
-    return [
-      `${(segment.distance / 1000).toFixed(1)} km`,
-      `climb ${segment.ascent.toFixed(0)} m`,
-      `${hhmm(segment.time)} walking`,
-      '',
-      `leg ${view} of ${segments.length}`,
-    ].join('\n')
-  }
-  if (awayM !== null) {
-    const away = awayM >= 10000 ? `${(awayM / 1000).toFixed(0)} km` : `${(awayM / 1000).toFixed(1)} km`
-    return [`route is`, `${away} away`, '', 'preview mode'].join('\n')
-  }
-  const p = progressOn(model, position)
-  if (p === null) return 'no fix'
-  // Total, not moving time: a finish estimate that ignores planned rest is the
-  // one that gets people caught out after dark.
-  const rest = p.remainingRest > 0 ? `  (+${Math.round(p.remainingRest / 60)}m rest)` : ''
-  return [
-    `${(p.remainingDistance / 1000).toFixed(1)} km to go`,
-    `climb ${p.remainingAscent.toFixed(0)} m`,
-    `${hhmm(p.remainingTotal)} left${rest}`,
-    '',
-    `${(p.along / 1000).toFixed(1)} of ${(totalM / 1000).toFixed(1)} km`,
-  ].join('\n')
-}
-
-function statusText(): string {
-  const segment = currentSegment()
-  if (segment !== null) {
-    return `${foldAscii(segment.from)}  ->  ${foldAscii(segment.to)}` +
-      `   (${(segment.fromAlong / 1000).toFixed(1)}-${(segment.toAlong / 1000).toFixed(1)} km)   scroll for more`
-  }
-  if (awayM !== null) return 'not on this route   (tap to preview, double-tap to exit)'
-  const p = progressOn(model, position)
-  if (p === null) return 'no fix'
-  if (!p.onRoute) return `OFF ROUTE  ${p.offset.toFixed(0)} m`
-
-  const decision = nextDecision(model, p.along, 1500)
-  if (decision !== null) {
-    const away = Math.max(0, decision.branchAlong - p.along)
-    return `junction in ${(away / 1000).toFixed(1)} km  ->  ${decision.path.name} ${formatDelta(decision)}`
-  }
-
-  // A sight is worth interrupting for only when it is about to arrive.
-  const sight = nextWaypoint(model, p.along)
-  if (sight !== null && sight.along - p.along <= SIGHT_ANNOUNCE_M) {
-    const at = sight.ele === undefined ? '' : ` ${sight.ele.toFixed(0)} m`
-    const off = sight.offset > 50 ? `  ${sight.offset.toFixed(0)} m off trail` : ''
-    return `${foldAscii(sight.name)}${at} in ${Math.round(sight.along - p.along)} m${off}`
-  }
-
-  // Standing at a stop having not rested: say so, since that is the moment the
-  // gesture is worth knowing about.
-  const here = stopNear(model, p.along)
-  if (here !== null) {
-    const taken = totalRestMs(rests, Date.now()) / 1000
-    const planned = plannedRestBefore(model, p.along)
-    const against = planned > 0
-      ? `   rested ${Math.round(taken / 60)}m of ${Math.round(planned / 60)}m planned`
-      : ''
-    return `at ${foldAscii(here.name)}   long-press to rest${against}`
-  }
-
-  const stop = nextStop(model, p.along)
-  if (stop !== null) {
-    const away = (stop.along - p.along) / 1000
-    const at = stop.ele === undefined ? '' : `  ${stop.ele.toFixed(0)} m`
-    return `next stop ${foldAscii(stop.name)} in ${away.toFixed(1)} km${at}`
-  }
-  return liveGps ? 'on route' : 'on route   (tap to advance, double-tap to exit)'
-}
-
-async function pushProfile(force = false): Promise<void> {
-  const p = progressOn(model, position)
-  const along = p?.along ?? 0
-  const segment = currentSegment()
-
-  const points = segment === null
-    ? model.main.points
-    : model.main.points.slice(segment.fromIndex, segment.toIndex + 1)
-  const origin = segment === null ? 0 : segment.fromAlong
-  const span = segment === null ? totalM : segment.toAlong - segment.fromAlong
-  // Only mark the walker when they are inside the span on show.
-  const local = along - origin
-  const inside = local >= 0 && local <= span
-
-  const column = Math.round((inside ? local / span : -1) * (PROFILE_W - 1)) + view * 10000
+async function pushProfile(hud: HudView, force = false): Promise<void> {
+  const column = Math.round(((hud.profile.atMeters ?? -1) / 1000) * 100) + view * 10_000
   if (!force && column === lastProfileColumn) return
   lastProfileColumn = column
 
-  const bitmap = renderProfile(points, {
+  const bitmap = renderProfile(hud.profile.points, {
     width: PROFILE_W,
     height: PROFILE_H,
-    atMeters: inside ? local : undefined,
-    marks: [...model.stops.map(s => s.along), ...model.variants.map(v => v.branchAlong)]
-      .map(m => m - origin)
-      .filter(m => m > 0 && m < span),
-    minorMarks: model.waypoints
-      .map(w => w.along - origin)
-      .filter(m => m > 0 && m < span),
+    ...(hud.profile.atMeters === undefined ? {} : { atMeters: hud.profile.atMeters }),
+    marks: hud.profile.marks,
+    minorMarks: hud.profile.minorMarks,
   })
   const result = await bridge.updateImageRawData(new ImageRawDataUpdate({
     containerID: PROFILE,
@@ -314,16 +241,18 @@ async function pushProfile(force = false): Promise<void> {
 }
 
 async function redraw(force = false): Promise<void> {
+  const hud = currentHud()
+  publish()
   await bridge.textContainerUpgrade(new TextContainerUpgrade({
-    containerID: TITLE, containerName: 'title', content: displayTitle(source.name),
+    containerID: TITLE, containerName: 'title', content: hud.title,
   }))
   await bridge.textContainerUpgrade(new TextContainerUpgrade({
-    containerID: STATS, containerName: 'stats', content: statsText(),
+    containerID: STATS, containerName: 'stats', content: hud.stats,
   }))
   await bridge.textContainerUpgrade(new TextContainerUpgrade({
-    containerID: STATUS, containerName: 'status', content: statusText(),
+    containerID: STATUS, containerName: 'status', content: hud.status,
   }))
-  await pushProfile(force)
+  await pushProfile(hud, force)
 }
 
 /* ---------- input ---------- */
@@ -358,10 +287,9 @@ bridge.onEvenHubEvent(async event => {
   // Long press starts a rest, or ends the one running. Chosen because it is the
   // one gesture nothing else uses and it is hard to trigger by accident.
   if (saw(OsEventTypeList.LONG_PRESS_EVENT)) {
-    const p = progressOn(model, position)
-    const here = p === null ? null : stopNear(model, p.along)
+    const here = following === null ? null : stopNear(model, following.along)
     rests = toggleRest(rests, {
-      along: p?.along ?? 0,
+      along: following?.along ?? 0,
       lat: position.lat,
       lon: position.lon,
       ...(here?.ele === undefined ? {} : { ele: here.ele }),
@@ -388,8 +316,8 @@ bridge.onEvenHubEvent(async event => {
     if (liveGps) return   // a real fix is driving the display; stepping would fight it
     // Without a fix, walk the route by tapping so the display can be exercised
     // in the simulator and on the glasses indoors.
-    const p = progressOn(model, position)
-    position = pointAt(((p?.along ?? 0) + totalM / 24) % totalM)
+    position = pointAt(((following?.along ?? 0) + totalM / 24) % totalM)
+    relocate(position)
     await redraw()
   }
 })
@@ -413,23 +341,25 @@ function menuLabel(name: string): string {
   return out.trimEnd()
 }
 
+const initialHud = currentHud()
+
 const result = await bridge.createStartUpPageContainer(new CreateStartUpPageContainer({
   containerTotalNum: 4,
   textObject: [
     new TextContainerProperty({
       xPosition: 0, yPosition: 0, width: 576, height: 26,
       containerID: TITLE, containerName: 'title', zOrderIndex: 1,
-      content: displayTitle(source.name), isEventCapture: 0,
+      content: initialHud.title, isEventCapture: 0,
     }),
     new TextContainerProperty({
       xPosition: 300, yPosition: 32, width: 276, height: 144,
       containerID: STATS, containerName: 'stats', zOrderIndex: 3,
-      content: statsText(), isEventCapture: 0,
+      content: initialHud.stats, isEventCapture: 0,
     }),
     new TextContainerProperty({
       xPosition: 0, yPosition: 182, width: 576, height: 100, paddingLength: 2,
       containerID: STATUS, containerName: 'status', zOrderIndex: 4,
-      content: statusText(), isEventCapture: 1,
+      content: initialHud.status, isEventCapture: 1,
     }),
   ],
   imageObject: [
@@ -456,23 +386,25 @@ if (result !== StartUpPageCreateResult.success) {
   console.error('createStartUpPageContainer failed:', result)
   return 'failed'
 }
-await pushProfile(true)
+await pushProfile(initialHud, true)
+publish()
 
 // A real fix takes over only once it is actually near the route.
 bridge.onAppLocationChanged((location: AppLocation) => {
   const fix: LatLon = { lat: location.latitude, lon: location.longitude }
-  const p = progressOn(model, fix)
-  if (p === null) return
+  const located = follow(model, fix, following)
+  if (located === null) return
 
-  if (p.offset > NAV_RADIUS_M) {
-    // Far from the line: say so, and leave tap stepping working rather than
-    // silently reporting progress along a route nobody is walking.
-    awayM = p.offset
+  if (located.offset > NAV_RADIUS_M) {
+    // Far from every known line: say so, and leave tap stepping working rather
+    // than silently reporting progress along a route nobody is walking.
+    awayM = located.offset
     liveGps = false
   } else {
     awayM = null
     liveGps = true
     position = fix
+    relocate(fix)
   }
   void redraw()
 })

@@ -9,6 +9,7 @@
 import { BUILT_IN_ROUTES } from './routes.ts'
 import type { Rest } from './lib/rests.ts'
 import type { RouteRecord } from './lib/route-store.ts'
+import type { Following } from './lib/follow.ts'
 
 export type GlassesStatus = 'connecting' | 'ready' | 'unavailable' | 'failed'
 
@@ -19,6 +20,18 @@ export interface AppState {
   glasses: GlassesStatus
   /** Populated once the glasses controller has loaded the route's log. */
   rests: Rest[]
+
+  /* Live state, mirrored so the phone page can render the same HUD. */
+
+  /** Which span the HUD is showing: 0 the whole walk, 1..n the legs. */
+  view: number
+  /** Where the walker is, and on which line. */
+  following: Following | null
+  /** Metres to the route when nowhere near it. */
+  awayM: number | null
+  liveGps: boolean
+  /** Transient banner, e.g. having just taken an alternative. */
+  notice: string | null
 }
 
 let state: AppState = {
@@ -26,6 +39,11 @@ let state: AppState = {
   routeId: BUILT_IN_ROUTES[0].id,
   glasses: 'connecting',
   rests: [],
+  view: 0,
+  following: null,
+  awayM: null,
+  liveGps: false,
+  notice: null,
 }
 
 type Listener = () => void

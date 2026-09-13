@@ -55,6 +55,19 @@ Three ways to run it, cheapest first:
 
 `src/storage.ts` picks the backing store: the host on the glasses, `localStorage` in a browser tab. That is what lets routes be imported and deleted while developing the page with no hardware. Reads await the bridge rather than guessing, so the page cannot read one store while the glasses write another.
 
+## Following, and the HUD both surfaces render
+
+`src/lib/hud.ts` computes **what the display says** — title, stats, status, and the profile parameters — as pure data. The glasses push those strings into text containers; the phone page renders the same values into a 576x288 box (`src/ui/Hud.tsx`, laid out in the glasses' own coordinates and scaled). One implementation, so the mirror cannot drift from the thing it mirrors, and the wording is testable without hardware.
+
+`src/lib/follow.ts` decides **which line the walker is on**. `progressOn` projects onto the main route alone, which is wrong the moment an alternative is taken — walking the long way to the hut would read as four kilometres of being off route. `follow()` considers the main line and every variant, maps progress along a variant onto its branch..rejoin span, and reports which is underfoot.
+
+Two things it needs that are easy to leave out:
+
+- **Hysteresis** (`switchMarginM`, default 20 m). At a junction both lines are literally underfoot, so without a margin the display swaps on every fix as noise nudges the projection. A newcomer has to be clearly closer, not merely closer.
+- **`changed` fires once**, on the update where the line actually changed, which is what drives the banner. `lineChangeNotice` turns it into `TAKING LONG WAY  +4.2km +424m` or `BACK ON MAIN ROUTE`; `glasses.ts` holds it on the status line for 12 s.
+
+Status-line priority, most urgent first: a line-change notice, being far from the route entirely, off route, which alternative is being walked, an approaching junction, an imminent sight, standing at a stop, the next stop, then plain "on route".
+
 ## Same walk, not a second route
 
 `src/lib/merge.ts` decides whether an imported GPX is a new route or another way round one already held. Same start, same finish, same stops (within 150 m — trailhead and hut pins wander between exports) means the same walk, in either direction, since two exports of one traverse routinely run opposite ways.
