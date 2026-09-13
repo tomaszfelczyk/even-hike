@@ -20,6 +20,9 @@ import { provideBridge } from './storage.ts'
 import { modelFor } from './build-route.ts'
 import { displayTitle, foldAscii, segmentsOf, stopNear, type RouteModel, type Segment } from './lib/route.ts'
 import { activeRest, parseRests, serializeRests, toggleRest, type Rest } from './lib/rests.ts'
+import {
+  endSession, recordFix, resumableSession, saveSession, startSession, type HikeSession,
+} from './lib/history.ts'
 import { renderProfile } from './lib/profile.ts'
 import { follow, type Following } from './lib/follow.ts'
 import { hudView, lineChangeNotice, type HudView } from './lib/hud.ts'
@@ -91,6 +94,15 @@ let rests!: Rest[]
 /** How long a line-change banner holds the status line. */
 const NOTICE_MS = 12_000
 
+/**
+ * How often the hike in progress is written out.
+ *
+ * Fixes arrive every few metres for hours; writing on each one would push a
+ * growing blob across the bridge thousands of times. Thirty seconds bounds the
+ * loss if the app dies to the last half minute of walking.
+ */
+const SESSION_SAVE_MS = 30_000
+
 let view = 0
 let position!: LatLon
 let following: Following | null = null
@@ -99,6 +111,8 @@ let noticeTimer: ReturnType<typeof setTimeout> | null = null
 let liveGps = false
 let awayM: number | null = null
 let lastProfileColumn = -1
+let session: HikeSession | null = null
+let sessionSavedAt = 0
 
 /**
  * Build everything that depends on the chosen route.
@@ -119,6 +133,16 @@ async function selectRoute(chosen: RouteRecord): Promise<void> {
 
   restKey = `rests:${chosen.id}`
   rests = parseRests(await store.get(restKey))
+  // Pick up a hike of this route that is still under way, so closing the app
+  // mid-walk does not split one afternoon into two records.
+  session = await resumableSession(store, chosen.id)
+  sessionSavedAt = 0
+
+  if (session !== null) {
+    // The hike belongs to the route it was walked on, so switching ends it.
+    await saveSession(store, endSession(session, Date.now()))
+    session = null
+  }
 
   view = 0
   position = model.main.points[0]
@@ -280,6 +304,10 @@ bridge.onEvenHubEvent(async event => {
   const saw = (type: OsEventTypeList) => types.includes(type)
 
   if (saw(OsEventTypeList.DOUBLE_CLICK_EVENT)) {
+    if (session !== null) {
+      await saveSession(store, endSession({ ...session, rests }, Date.now()))
+      session = null
+    }
     await bridge.shutDownPageContainer(1)
     return
   }
@@ -298,6 +326,11 @@ bridge.onEvenHubEvent(async event => {
     // Written on every change: a hike outlasts the app, and an interrupted
     // session must not lose the log.
     void store.set(restKey, serializeRests(rests))
+    if (session !== null) {
+      session = { ...session, rests }
+      void saveSession(store, session)
+      sessionSavedAt = Date.now()
+    }
     setState({ rests })
     syncRestTimer()
     await redraw(true)
@@ -405,9 +438,33 @@ bridge.onAppLocationChanged((location: AppLocation) => {
     liveGps = true
     position = fix
     relocate(fix)
+    recordWalked(fix, location.altitude)
   }
   void redraw()
 })
+
+/**
+ * Add a fix to the hike in progress, starting one if this is the first.
+ *
+ * Only live fixes near the route are recorded — tap stepping and a phone
+ * sitting at home must not manufacture a walk that never happened.
+ */
+function recordWalked(fix: LatLon, altitude?: number): void {
+  const now = Date.now()
+  if (session === null) {
+    session = startSession(source.id, source.name, now)
+    sessionSavedAt = 0
+  }
+
+  const next = recordFix(session, fix, altitude === undefined ? {} : { ele: altitude })
+  // recordFix returns the same object when the fix was too close to matter.
+  if (next === session && now - sessionSavedAt < SESSION_SAVE_MS) return
+  session = { ...next, rests }
+  if (now - sessionSavedAt >= SESSION_SAVE_MS) {
+    sessionSavedAt = now
+    void saveSession(store, session)
+  }
+}
 void bridge.startAppLocationUpdates({ accuracy: AppLocationAccuracy.High, distanceFilter: 10 })
 
 // The phone page can switch route too; mirror it onto the glasses.

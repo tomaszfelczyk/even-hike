@@ -55,6 +55,18 @@ Three ways to run it, cheapest first:
 
 `src/storage.ts` picks the backing store: the host on the glasses, `localStorage` in a browser tab. That is what lets routes be imported and deleted while developing the page with no hardware. Reads await the bridge rather than guessing, so the page cannot read one store while the glasses write another.
 
+## Hike history
+
+`src/lib/history.ts` records what happened, as distinct from the route, which is the plan. Comparing the two is the point of keeping it: `elapsedMs` includes rest, `movingMs` does not, and `walkedDistance` comes from the trace rather than the plan.
+
+**The trace is thinned on the way in** (`TRACE_SPACING_M`, 25 m) while routes are stored at full density. Navigation projects onto a route, so its detail matters; a trace is only reviewed. On a 20 km walk that is ~6 KB instead of ~14 KB, and hikes accumulate forever while routes do not. That difference is what keeps a key/value store viable here — see the note under **Storing data** for where it stops being viable.
+
+Recording only happens on live fixes near the route. Tap stepping and a phone sitting at home must not manufacture a walk that never happened.
+
+Writes are throttled to every 30 s (`SESSION_SAVE_MS`). Fixes arrive every few metres for hours, and writing on each would push a growing blob across the bridge thousands of times; 30 s bounds the loss to the last half minute of walking. `recordFix` returns **the same object** when a fix was too close to matter, so callers can skip a write by identity.
+
+A hike ends on exit or on switching route — it belongs to the route it was walked on. An unfinished one is resumed if it is recent (`resumableSession`, 12 h), so closing the app mid-walk does not split one afternoon into two records; an unfinished hike from last month is abandoned, not in progress.
+
 ## Following, and the HUD both surfaces render
 
 `src/lib/hud.ts` computes **what the display says** — title, stats, status, and the profile parameters — as pure data. The glasses push those strings into text containers; the phone page renders the same values into a 576x288 box (`src/ui/Hud.tsx`, laid out in the glasses' own coordinates and scaled). One implementation, so the mirror cannot drift from the thing it mirrors, and the wording is testable without hardware.

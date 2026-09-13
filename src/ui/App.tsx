@@ -14,6 +14,7 @@ import {
 import { findSameRoute, mergeAsVariants } from '../lib/merge.ts'
 import { ElevationProfile } from './ElevationProfile.tsx'
 import { Hud } from './Hud.tsx'
+import { History } from './History.tsx'
 import { hudView } from '../lib/hud.ts'
 import { follow } from '../lib/follow.ts'
 import { displayTitle } from '../lib/route.ts'
@@ -149,6 +150,9 @@ export function App() {
       />
       {error !== null && <Text variant="detail" style={{ color: 'crimson' }}>{error}</Text>}
       {notice !== null && <Text variant="detail">{notice}</Text>}
+
+      {/* Reloads when the rests change, which is the signal a hike advanced. */}
+      <History refreshKey={state.rests.length + (state.following === null ? 0 : 1)} />
 
       {hud !== null && (
         <Card>
