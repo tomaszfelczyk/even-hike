@@ -135,3 +135,45 @@ test('without a position there is no direction to offer, and none is invented', 
   })
   assert.match(view.status, /^OFF ROUTE {2}\d+ m$/)
 })
+
+test('the display is quiet when there is nothing to say', () => {
+  const following = follow(model, model.main.points[600], null)!
+  const view = hudView({
+    model, routeName: 'Tatry', segments: segmentsOf(model), view: 0,
+    following, awayM: null, rests: [], liveGps: true, now: Date.now(),
+  })
+  assert.equal(view.status, '', 'a HUD that is always talking stops being read')
+  assert.equal(view.brightness, 2, 'and it dims')
+})
+
+test('the headline leads with the next stop, not the finish', () => {
+  const following = follow(model, model.main.points[100], null)!
+  const view = hudView({
+    model, routeName: 'Tatry', segments: segmentsOf(model), view: 0,
+    following, awayM: null, rests: [], liveGps: true, now: Date.now(),
+  })
+  const [distance, to] = view.stats.split('\n')
+  assert.match(distance, /^\d+\.\d km$/)
+  assert.equal(to, 'to Murowaniec', 'the thing a walker can act on')
+  assert.match(view.stats, /km left/, 'the total is still there, lower down')
+})
+
+test('brightness rises for things that must be acted on', () => {
+  const base = {
+    model, routeName: 'Tatry', segments: segmentsOf(model), view: 0,
+    awayM: null, rests: [], liveGps: true, now: Date.now(),
+  }
+  const quiet = hudView({ ...base, following: follow(model, model.main.points[600], null)! })
+  assert.equal(quiet.brightness, 2)
+
+  // Two kilometres north. A smaller offset is unreliable on a route that winds
+  // back on itself — it can land within tolerance of a different stretch.
+  const onLine = model.main.points[600]
+  const strayed = follow(model, { lat: onLine.lat + 0.018, lon: onLine.lon }, null)!
+  assert.equal(strayed.onRoute, false, 'test precondition')
+  assert.equal(hudView({ ...base, following: strayed }).brightness, 4, 'off route')
+
+  const noticed = hudView({ ...base, following: quietFollowing(), notice: 'TAKING LONG WAY' })
+  assert.equal(noticed.brightness, 4, 'a banner')
+})
+function quietFollowing() { return follow(model, model.main.points[600], null)! }

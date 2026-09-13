@@ -142,8 +142,26 @@ export function renderProfile(points: readonly RoutePoint[], options: ProfileOpt
   return bitmap
 }
 
-/** Flat byte array for `updateImageRawData`. */
+/** Flat byte array for `updateImageRawData`. The verbose form — see `toBase64`. */
 export const toRawData = (bitmap: Bitmap): number[] => Array.from(bitmap.data)
+
+/**
+ * The bitmap as base64, which is how it should normally reach the host.
+ *
+ * `updateImageRawData` serialises `imageData` into the JSON message sent across
+ * the WebView bridge, so an array of 41,472 bytes becomes ~145 KB of text. The
+ * SDK's LZ4 pass applies to the host-to-glasses hop only and does nothing for
+ * that one. Base64 of the same bitmap is 54 KB.
+ */
+export function toBase64(bitmap: Bitmap): string {
+  // Chunked: spreading tens of thousands of arguments overflows the stack.
+  let binary = ''
+  const CHUNK = 0x8000
+  for (let i = 0; i < bitmap.data.length; i += CHUNK) {
+    binary += String.fromCharCode(...bitmap.data.subarray(i, i + CHUNK))
+  }
+  return btoa(binary)
+}
 
 const RAMP = ' .:-=+*#%@'
 

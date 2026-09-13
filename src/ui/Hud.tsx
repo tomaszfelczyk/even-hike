@@ -6,7 +6,7 @@ import type { HudView } from '../lib/hud.ts'
 const CANVAS_W = 576
 const CANVAS_H = 288
 const PROFILE_W = 288
-const PROFILE_H = 144
+const PROFILE_H = 96
 
 /**
  * The glasses display, mirrored.
@@ -60,23 +60,23 @@ export function Hud({ view }: { view: HudView }) {
         containerType: 'inline-size',
       }}
     >
-      <Region x={0} y={0} w={576} h={26}>
-        <Line size={15}>{view.title}</Line>
+      <Region x={0} y={0} w={576} h={24}>
+        <Line size={15} brightness={1}>{view.title}</Line>
       </Region>
 
-      <Region x={0} y={32} w={PROFILE_W} h={PROFILE_H}>
+      <Region x={0} y={28} w={PROFILE_W} h={PROFILE_H}>
         <canvas
           ref={canvas}
           style={{ width: '100%', height: '100%', imageRendering: 'pixelated', display: 'block' }}
         />
       </Region>
 
-      <Region x={300} y={32} w={276} h={PROFILE_H}>
-        <Line size={17}>{view.stats}</Line>
+      <Region x={300} y={28} w={276} h={PROFILE_H}>
+        <Line size={17} brightness={view.brightness}>{view.stats}</Line>
       </Region>
 
-      <Region x={0} y={182} w={576} h={100}>
-        <Line size={15}>{view.status}</Line>
+      <Region x={0} y={132} w={576} h={150}>
+        <Line size={15} brightness={view.brightness}>{view.status}</Line>
       </Region>
     </div>
   )
@@ -102,12 +102,19 @@ function Region(
   )
 }
 
-/** Text at a size expressed in glasses pixels, scaled with the container. */
-function Line({ size, children }: { size: number; children: React.ReactNode }) {
+/**
+ * Text at a size expressed in glasses pixels, scaled with the container.
+ * `brightness` mirrors the firmware's 0..4 text levels.
+ */
+function Line(
+  { size, brightness = 4, children }:
+  { size: number; brightness?: number; children: React.ReactNode },
+) {
   return (
     <pre
       style={{
         margin: 0,
+        opacity: 0.25 + 0.75 * (Math.max(0, Math.min(4, brightness)) / 4),
         fontSize: `${(size / CANVAS_W) * 100}cqw`,
         lineHeight: 1.25,
         whiteSpace: 'pre-wrap',

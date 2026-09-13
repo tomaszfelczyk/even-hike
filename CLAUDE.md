@@ -57,13 +57,28 @@ Three ways to run it, cheapest first:
 
 ## The image is the expensive part
 
-Text updates are cheap; the profile is 288x144, about **41 KB before LZ4**, and it crosses a BLE link. `pushProfile` therefore throttles hard where `textContainerUpgrade` does not:
+Text updates are cheap. The profile is not, and the reason is **not** the BLE link people assume: `updateImageRawData` serialises `imageData` into the JSON message crossing the WebView bridge, so an array of 41,472 bytes becomes **~145 KB of text**. The SDK's LZ4 pass applies to the host-to-glasses hop only and does nothing for that one.
+
+Two things follow, both measured:
+
+- **Send base64, not an array.** Same bitmap, 54 KB instead of 145 KB. `toBase64` in `profile.ts`. The SDK documents a string as accepted but no host here has confirmed it, so a failed push drops to the array form permanently rather than leaving the profile blank.
+- **Pixel count is the only lever on that hop.** 288x96 instead of 288x144 is a third less again. Whether the profile is filled or a bare outline makes *no* difference to size — 17,595 lit pixels and 683 lit pixels both compress to 1.0 KB, because both are long runs. Fill is a legibility choice, not a bandwidth one.
+
+`pushProfile` also throttles hard where `textContainerUpgrade` does not:
 
 - It only pushes when the marker crosses a **pixel** — on a 20 km route that is 69 m of walking.
 - At most one push every `PROFILE_MIN_INTERVAL_MS` (4 s), and never two at once. A burst of fixes schedules **one** trailing push for the newest state rather than queueing a dozen stale ones.
 - A failed push clears the dedupe key, so the next attempt is not suppressed by a frame that never arrived.
 
 If the profile looks frozen on device, this is the first place to look — the symptom of pushing too often is a picture that stops keeping pace, not one that errors.
+
+## Quiet by default
+
+There are no haptics and no sound in the SDK, so **text brightness (0..4) is the only attention channel**. `hudView` returns a `brightness` with the strings: 2 while walking, 4 for a line-change banner, being off route, an imminent junction, or standing at a stop.
+
+The headline leads with the **next stop**, not the finish — `3.2 km / to Murowaniec / 1h10`, with the total on a lower line. The finish is trivia until the last leg.
+
+When nothing needs saying the status line is **empty**. It used to repeat the next stop that the headline already gives, and a HUD that is always talking stops being read.
 
 ## Hike history
 

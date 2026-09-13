@@ -23,7 +23,7 @@ import { activeRest, parseRests, serializeRests, toggleRest, type Rest } from '.
 import {
   endSession, recordFix, resumableSession, saveSession, startSession, type HikeSession,
 } from './lib/history.ts'
-import { renderProfile } from './lib/profile.ts'
+import { renderProfile, toBase64, toRawData } from './lib/profile.ts'
 import { follow, type Following } from './lib/follow.ts'
 import { hudView, lineChangeNotice, type HudView } from './lib/hud.ts'
 import { cumulativeDistances, type LatLon } from './lib/geo.ts'
@@ -34,7 +34,12 @@ const STATS = 3
 const STATUS = 4
 
 const PROFILE_W = 288
-const PROFILE_H = 144
+/**
+ * Shorter than the 144 the firmware allows. The wire cost is the pixel count —
+ * 288x96 is a third less data per push — and the profile reads perfectly well
+ * at this height, which also frees canvas for text.
+ */
+const PROFILE_H = 96
 
 /**
  * How close a fix must be before it is treated as navigating this route.
@@ -124,6 +129,12 @@ let lastProfileKey = ''
 let lastProfileAt = 0
 let profileBusy = false
 let profileRetry: ReturnType<typeof setTimeout> | null = null
+/**
+ * Base64 is ~2.7x smaller across the bridge and the SDK documents it as
+ * accepted, but no host has confirmed it here. If a push fails we drop to the
+ * verbose array form for good rather than leaving the profile blank.
+ */
+let imageEncoding: 'base64' | 'array' = 'base64'
 let session: HikeSession | null = null
 let sessionSavedAt = 0
 
@@ -294,11 +305,15 @@ async function pushProfile(hud: HudView, force = false): Promise<void> {
     const result = await bridge.updateImageRawData(new ImageRawDataUpdate({
       containerID: PROFILE,
       containerName: 'profile',
-      imageData: bitmap.data,
+      imageData: imageEncoding === 'base64' ? toBase64(bitmap) : toRawData(bitmap),
     }))
     // Firmware renders 4-level grey, so the bitmap's tones are quantised there.
     if (result !== ImageRawDataUpdateResult.success) {
-      console.error('updateImageRawData failed:', result, `${bitmap.data.length} bytes`)
+      console.error('updateImageRawData failed:', result, `${imageEncoding}, ${bitmap.data.length} px`)
+      if (imageEncoding === 'base64') {
+        console.warn('falling back to the array encoding for images')
+        imageEncoding = 'array'
+      }
       // Let the next attempt through rather than sitting on a key that never
       // reached the glasses.
       lastProfileKey = ''
@@ -315,10 +330,10 @@ async function redraw(force = false): Promise<void> {
     containerID: TITLE, containerName: 'title', content: hud.title,
   }))
   await bridge.textContainerUpgrade(new TextContainerUpgrade({
-    containerID: STATS, containerName: 'stats', content: hud.stats,
+    containerID: STATS, containerName: 'stats', content: hud.stats, textColor: hud.brightness,
   }))
   await bridge.textContainerUpgrade(new TextContainerUpgrade({
-    containerID: STATUS, containerName: 'status', content: hud.status,
+    containerID: STATUS, containerName: 'status', content: hud.status, textColor: hud.brightness,
   }))
   await pushProfile(hud, force)
 }
@@ -424,24 +439,24 @@ const result = await bridge.createStartUpPageContainer(new CreateStartUpPageCont
   containerTotalNum: 4,
   textObject: [
     new TextContainerProperty({
-      xPosition: 0, yPosition: 0, width: 576, height: 26,
-      containerID: TITLE, containerName: 'title', zOrderIndex: 1,
+      xPosition: 0, yPosition: 0, width: 576, height: 24,
+      containerID: TITLE, containerName: 'title', zOrderIndex: 1, textColor: 1,
       content: initialHud.title, isEventCapture: 0,
     }),
     new TextContainerProperty({
-      xPosition: 300, yPosition: 32, width: 276, height: 144,
+      xPosition: 300, yPosition: 28, width: 276, height: PROFILE_H,
       containerID: STATS, containerName: 'stats', zOrderIndex: 3,
       content: initialHud.stats, isEventCapture: 0,
     }),
     new TextContainerProperty({
-      xPosition: 0, yPosition: 182, width: 576, height: 100, paddingLength: 2,
+      xPosition: 0, yPosition: 132, width: 576, height: 150, paddingLength: 2,
       containerID: STATUS, containerName: 'status', zOrderIndex: 4,
       content: initialHud.status, isEventCapture: 1,
     }),
   ],
   imageObject: [
     new ImageContainerProperty({
-      xPosition: 0, yPosition: 32, width: PROFILE_W, height: PROFILE_H,
+      xPosition: 0, yPosition: 28, width: PROFILE_W, height: PROFILE_H,
       containerID: PROFILE, containerName: 'profile', zOrderIndex: 2,
     }),
   ],

@@ -53,7 +53,17 @@ export interface HudView {
   stats: string
   status: string
   profile: HudProfile
+  /**
+   * Text brightness, 0..4. The SDK offers no haptics or sound, so this is the
+   * only attention channel there is: quiet while nothing is happening, full
+   * when something needs reading.
+   */
+  brightness: number
 }
+
+/** Full brightness is for things the walker must act on. */
+const URGENT = 4
+const AMBIENT = 2
 
 const hhmm = (seconds: number) => {
   const total = Math.round(seconds / 60)
@@ -112,15 +122,41 @@ function statsText(input: HudInput): string {
   }
 
   if (input.following === null) return 'no fix'
-  const left = remainingFrom(input.model, input.following.along)
-  const pause = left.pause > 0 ? `  (+${Math.round(left.pause / 60)}m rest)` : ''
+  const along = input.following.along
+  const left = remainingFrom(input.model, along)
+
+  // The next stop is what a walker can act on; the finish is trivia until the
+  // last leg. Lead with whichever is actually next.
+  const stop = nextStop(input.model, along)
+  const target = stop === null
+    ? { name: 'finish', at: input.model.mainLength }
+    : { name: foldAscii(stop.name), at: stop.along }
+  const toTarget = Math.max(0, target.at - along)
+  const leg = remainingFrom(input.model, along)
+  const legTime = stop === null
+    ? leg.walking
+    : Math.max(0, leg.walking - remainingFrom(input.model, target.at).walking)
+
   return [
-    `${(left.distance / 1000).toFixed(1)} km to go`,
-    `climb ${left.climb.toFixed(0)} m`,
-    `${hhmm(left.total)} left${pause}`,
+    `${(toTarget / 1000).toFixed(1)} km`,
+    `to ${target.name}`,
+    hhmm(legTime),
     '',
-    `${(input.following.along / 1000).toFixed(1)} of ${(input.model.mainLength / 1000).toFixed(1)} km`,
+    `${(left.distance / 1000).toFixed(1)} km left  ${hhmm(left.total)}`,
   ].join('\n')
+}
+
+/** How loudly the display should be speaking. */
+function brightnessOf(input: HudInput): number {
+  if (input.notice) return URGENT
+  if (input.following !== null && !input.following.onRoute) return URGENT
+  if (activeRest(input.rests) !== null) return AMBIENT
+  if (input.following !== null) {
+    const decision = nextDecision(input.model, input.following.along, 600)
+    if (decision !== null) return URGENT
+    if (stopNear(input.model, input.following.along) !== null) return URGENT
+  }
+  return AMBIENT
 }
 
 function statusText(input: HudInput): string {
@@ -176,13 +212,9 @@ function statusText(input: HudInput): string {
     return `at ${foldAscii(here.name)}   long-press to rest${against}`
   }
 
-  const stop = nextStop(input.model, along)
-  if (stop !== null) {
-    const away = (stop.along - along) / 1000
-    const at = stop.ele === undefined ? '' : `  ${stop.ele.toFixed(0)} m`
-    return `next stop ${foldAscii(stop.name)} in ${away.toFixed(1)} km${at}`
-  }
-  return input.liveGps ? 'on route' : 'on route   (tap to advance, double-tap to exit)'
+  // Nothing to say. The stats already lead with the next stop, so repeating it
+  // here would be noise — and a HUD that is always talking stops being read.
+  return input.liveGps ? '' : 'tap to advance, double-tap to exit'
 }
 
 function profileOf(input: HudInput): HudProfile {
@@ -228,6 +260,7 @@ export function hudView(input: HudInput): HudView {
     stats: statsText(input),
     status: statusText(input),
     profile: profileOf(input),
+    brightness: brightnessOf(input),
   }
 }
 
