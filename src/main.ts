@@ -6,24 +6,20 @@ import {
   TextContainerUpgrade,
   ImageRawDataUpdate,
   ImageRawDataUpdateResult,
+  MenuContainerProperty,
+  MenuItemProperty,
   OsEventTypeList,
   StartUpPageCreateResult,
   AppLocationAccuracy,
   type AppLocation,
 } from '@evenrealities/even_hub_sdk'
 
-// One bundled route for now. The next step is loading GPX from the phone via
-// Even Hub, at which point this import becomes a runtime load and `model` is
-// rebuilt per route rather than fixed at build time.
-import routeGpx from '../route_1.1.gpx?raw'
-// Second way up to Murowaniec. It shares both endpoints with the first leg, so
-// it is an alternative rather than a continuation — see `joinLegs`.
-import altFirstLegGpx from '../route_1.gpx?raw'
-
+import { ROUTES, type RouteSource } from './routes.ts'
 import { parseGpx } from './lib/gpx.ts'
 import {
   buildRoute, displayTitle, foldAscii, formatDelta, nextDecision, nextStop,
-  nextWaypoint, plannedRestBefore, progressOn, segmentsOf, stopNear, type Segment,
+  nextWaypoint, plannedRestBefore, progressOn, segmentsOf, stopNear,
+  type RouteModel, type Segment,
 } from './lib/route.ts'
 import {
   activeRest, parseRests, restDurationMs, serializeRests, toggleRest, totalRestMs,
@@ -40,61 +36,97 @@ const STATUS = 4
 const PROFILE_W = 288
 const PROFILE_H = 144
 
-/**
- * Display name for the bundled route, overriding AllTrails' export name in the
- * GPX. Once routes load from the phone the name travels with the file and this
- * constant goes away.
- */
-const ROUTE_NAME = 'Tatry Wysokie: Kuźnice - Zawrat - Palenica Białczańska'
-
-/**
- * Rest allowed at each stop. The route's legs meet at 1512 m and 1685 m, which
- * are hut altitudes, so these are pauses rather than mere waypoints. Adjust to
- * taste — a long lunch at Piec Stawow is not fifteen minutes.
- */
-const REST_PER_STOP_S = 15 * 60
-
-/**
- * Names for the two leg junctions, in order. Positions come from the GPX, so
- * re-exporting the route keeps these attached to the right places. Held here
- * with their real spelling; folding to ASCII happens only at display.
- */
-const STOP_NAMES = ['Murowaniec', 'PTTK Pięć Stawów']
-
-/** Label for the alternative first leg; kept short so the delta fits the menu. */
-const ALT_FIRST_LEG = 'Long way'
-
-const bridge = await waitForEvenAppBridge()
-
-// Compiled in rather than fetched: there is no signal on a trail, so nothing
-// may depend on the network at walking time. `buildRoute` chains the file's
-// three <trk> legs into one continuous line before analysing it.
 /** How close a sight must be before it takes over the status line. */
 const SIGHT_ANNOUNCE_M = 400
 
-/** Where the rest log lives. Keyed by route so two hikes cannot overwrite each other. */
-const REST_KEY = 'rests:route_1.1'
+/**
+ * How close a fix must be before it is treated as navigating this route.
+ *
+ * Beyond it, projecting onto the line is meaningless: a fix in Warsaw is 336 km
+ * away and snaps to whichever end happens to be nearest, which reads on screen
+ * as "0.0 km to go, climb 0 m". Report the distance to the route instead.
+ */
+const NAV_RADIUS_M = 250
 
-const route = parseGpx(routeGpx)
-const model = buildRoute([
-  ...route.paths,
-  { ...parseGpx(altFirstLegGpx).paths[0], name: ALT_FIRST_LEG },
-], {
-  restSeconds: REST_PER_STOP_S,
-  stopNames: STOP_NAMES,
-  // Sights ride along from the GPX; none present until waypoints are added to
-  // the route in AllTrails and it is re-exported.
-  waypoints: route.waypoints,
-})!
+/** Which route was last chosen. Remembered so a hike survives a restart. */
+const SELECTED_KEY = 'route:selected'
 
-const mainCum = cumulativeDistances(model.main.points)
-const totalM = model.mainLength
+/** Firmware cap on a contextual-menu label. */
+const MENU_NAME_BYTES = 32
 
-// Straight Naismith: 1 h per 5 km plus 1 h per 600 m of ascent, no fudge factor.
+const bridge = await waitForEvenAppBridge()
+
+/* ---------- per-route state ---------- */
+
+// All assigned by `selectRoute`, which runs before anything reads them; the
+// assertions are needed because that happens inside an awaited call.
+let source!: RouteSource
+let model!: RouteModel
+let mainCum!: number[]
+let totalM!: number
+let segments!: Segment[]
+let viewCount!: number
+let restKey!: string
+let rests!: Rest[]
+
+let view = 0
+let position!: LatLon
+let liveGps = false
+let awayM: number | null = null
+let lastProfileColumn = -1
+
+const currentSegment = (): Segment | null => (view === 0 ? null : segments[view - 1])
+
+/**
+ * Build everything that depends on the chosen route.
+ *
+ * Rest logs are keyed by route id, so switching mid-hike parks one log and
+ * picks up the other rather than merging two days of walking.
+ */
+async function selectRoute(chosen: RouteSource): Promise<void> {
+  const parsed = parseGpx(chosen.gpx)
+  const alternatives = (chosen.alternatives ?? []).flatMap(alt => {
+    const path = parseGpx(alt.gpx).paths[alt.pathIndex]
+    return path === undefined ? [] : [{ ...path, name: alt.name }]
+  })
+
+  source = chosen
+  model = buildRoute([...parsed.paths, ...alternatives], {
+    restSeconds: chosen.restSeconds ?? 0,
+    stopNames: chosen.stopNames,
+    // Sights ride along from the GPX; none until waypoints are added to the
+    // route in AllTrails and it is re-exported.
+    waypoints: parsed.waypoints,
+  })!
+
+  mainCum = cumulativeDistances(model.main.points)
+  totalM = model.mainLength
+  segments = segmentsOf(model)
+  viewCount = segments.length > 1 ? segments.length + 1 : 1
+
+  restKey = `rests:${chosen.id}`
+  rests = parseRests(await bridge.getLocalStorage(restKey))
+
+  view = 0
+  position = model.main.points[0]
+  liveGps = false
+  awayM = null
+  lastProfileColumn = -1
+
+  void bridge.setLocalStorage(SELECTED_KEY, chosen.id)
+}
+
+const remembered = await bridge.getLocalStorage(SELECTED_KEY)
+await selectRoute(ROUTES.find(r => r.id === remembered) ?? ROUTES[0])
+
+/* ---------- formatting ---------- */
+
+// Straight Tobler via `hikingTime`; no terrain fudge factor.
 const hhmm = (seconds: number) => {
   const t = Math.round(seconds / 60)
   return `${Math.floor(t / 60)}h${String(t % 60).padStart(2, '0')}`
 }
+const mins = (ms: number) => `${Math.round(ms / 60_000)}m`
 
 /** Point at a given distance along the main route, for stepping without GPS. */
 function pointAt(along: number): LatLon {
@@ -114,34 +146,6 @@ function pointAt(along: number): LatLon {
     lon: points[i - 1].lon + t * (points[i].lon - points[i - 1].lon),
   }
 }
-
-/**
- * How close a fix must be before it is treated as navigating this route.
- *
- * Beyond it, projecting onto the line is meaningless: a fix in Warsaw is 336 km
- * away and snaps to whichever end happens to be nearest, which reads on screen
- * as "0.0 km to go, climb 0 m". Report the distance to the route instead.
- */
-const NAV_RADIUS_M = 250
-
-const segments = segmentsOf(model)
-
-/**
- * Which span the screen is describing. 0 is the whole walk; 1..n are the
- * segments between stops. Scroll up and down to move between them.
- */
-let view = 0
-const viewCount = segments.length > 1 ? segments.length + 1 : 1
-const currentSegment = (): Segment | null => (view === 0 ? null : segments[view - 1])
-
-let rests: Rest[] = parseRests(await bridge.getLocalStorage(REST_KEY))
-
-let position: LatLon = model.main.points[0]
-let liveGps = false
-let awayM: number | null = null
-let lastProfileColumn = -1
-
-const mins = (ms: number) => `${Math.round(ms / 60_000)}m`
 
 /**
  * While resting, nothing else generates an event, so the clock has to drive the
@@ -288,6 +292,9 @@ async function pushProfile(force = false): Promise<void> {
 
 async function redraw(force = false): Promise<void> {
   await bridge.textContainerUpgrade(new TextContainerUpgrade({
+    containerID: TITLE, containerName: 'title', content: displayTitle(source.name),
+  }))
+  await bridge.textContainerUpgrade(new TextContainerUpgrade({
     containerID: STATS, containerName: 'stats', content: statsText(),
   }))
   await bridge.textContainerUpgrade(new TextContainerUpgrade({
@@ -296,8 +303,22 @@ async function redraw(force = false): Promise<void> {
   await pushProfile(force)
 }
 
+/* ---------- input ---------- */
+
 // Subscribe before creating the page so nothing that lands during setup is lost.
 bridge.onEvenHubEvent(async event => {
+  // Picking a route from the contextual menu.
+  const picked = event.menuItemClickEvent?.itemID
+  if (picked !== undefined && picked >= 1 && picked <= ROUTES.length) {
+    const chosen = ROUTES[picked - 1]
+    if (chosen.id !== source.id) {
+      await selectRoute(chosen)
+      syncRestTimer()
+      await redraw(true)
+    }
+    return
+  }
+
   // CLICK_EVENT is 0 and proto3 omits zero-valued fields, so a tap arrives with
   // eventType absent. The default must be resolved inside the envelope check —
   // and because of that default, CLICK has to be tested last.
@@ -325,7 +346,7 @@ bridge.onEvenHubEvent(async event => {
     }, Date.now())
     // Written on every change: a hike outlasts the app, and an interrupted
     // session must not lose the log.
-    void bridge.setLocalStorage(REST_KEY, serializeRests(rests))
+    void bridge.setLocalStorage(restKey, serializeRests(rests))
     syncRestTimer()
     await redraw(true)
     return
@@ -349,13 +370,32 @@ bridge.onEvenHubEvent(async event => {
   }
 })
 
+/* ---------- page ---------- */
+
+/**
+ * Fold and trim to the firmware's label budget, preferring a word boundary.
+ * The menu silently rejects an over-long name, so this must not be optimistic.
+ */
+function menuLabel(name: string): string {
+  const encoder = new TextEncoder()
+  const folded = foldAscii(name)
+  if (encoder.encode(folded).length <= MENU_NAME_BYTES) return folded
+
+  let out = folded
+  while (out.length > 0 && encoder.encode(out).length > MENU_NAME_BYTES) out = out.slice(0, -1)
+  const lastSpace = out.lastIndexOf(' ')
+  // Only step back to a word boundary if it does not cost most of the label.
+  if (lastSpace > MENU_NAME_BYTES / 2) out = out.slice(0, lastSpace)
+  return out.trimEnd()
+}
+
 const result = await bridge.createStartUpPageContainer(new CreateStartUpPageContainer({
   containerTotalNum: 4,
   textObject: [
     new TextContainerProperty({
       xPosition: 0, yPosition: 0, width: 576, height: 26,
       containerID: TITLE, containerName: 'title', zOrderIndex: 1,
-      content: displayTitle(ROUTE_NAME), isEventCapture: 0,
+      content: displayTitle(source.name), isEventCapture: 0,
     }),
     new TextContainerProperty({
       xPosition: 300, yPosition: 32, width: 276, height: 144,
@@ -374,6 +414,15 @@ const result = await bridge.createStartUpPageContainer(new CreateStartUpPageCont
       containerID: PROFILE, containerName: 'profile', zOrderIndex: 2,
     }),
   ],
+  // The route picker. Firmware allows at most 10 items, each id non-zero and
+  // unique; the layout never changes between routes, so this is set once and
+  // switching is only a text and image update.
+  menuObject: new MenuContainerProperty({
+    menuItems: ROUTES.slice(0, 10).map((route, i) => new MenuItemProperty({
+      itemName: menuLabel(route.name),
+      itemID: i + 1,
+    })),
+  }),
 }))
 
 syncRestTimer()

@@ -52,6 +52,16 @@ Significance is measured in **walking time, not distance** (`minDetourSeconds`, 
 
 Consequences worth knowing before changing it. **Elevation needs two defences, not one.** `ascent()` applies hysteresis, but that alone is not enough on a densely-sampled real export: `buildRoute()` first runs `smoothElevation()` over a 150 m distance window. A real AllTrails Tatra traverse (34.6 km, 3167 points, ~8 m spacing) reads 3658 m of climb raw and 2973 m at a 60 m window, against a true ~2500-2700 m — and Naismith charges an hour per 600 m, so the raw figure is two hours of ETA error. Validate any change to these defaults against a prominence count (sum only climbs above ~50 m of prominence); it is structurally independent of smoothing and converges where the smoothing grid does. Off-route distance projects onto segments rather than snapping to vertices, or a coarsely-sampled straight would read as a large deviation. And `variantLabel()` trims the *name*, never the numbers, to fit the firmware's 32-byte menu cap.
 
+## Multiple routes
+
+`src/routes.ts` holds the bundled routes as `RouteSource` records — id, name, GPX text, optional alternatives, stop names, planned rest. `selectRoute()` in `main.ts` rebuilds every route-dependent value from one of them, so adding a route is one entry in that array.
+
+The picker is the SDK's **contextual menu**, set once at page creation (itemIDs 1..n, max 10, labels folded and trimmed to 32 UTF-8 bytes — the firmware rejects an over-long name silently). The container layout is identical across routes, so switching is only a text and image update, never a `rebuildPageContainer`.
+
+Rest logs are keyed `rests:<route id>` and the chosen route is remembered under `route:selected`, so switching mid-hike parks one log and resumes the other rather than merging two days of walking.
+
+**`@jappyjan/even-realities-ui` cannot draw any of this.** It is a React DOM library (`react ^19`, tailwind-merge), so it belongs to the phone-side page in the WebView — the GPX loader and route manager that are still to be built. The glasses are drawn with SDK container primitives and nothing else; `<div id="app">` stays empty.
+
 ## Stops
 
 `joinLegs()` records the point indices where legs met, and `buildRoute()` turns those into `model.stops`. The reasoning: a route exported as several `<trk>` elements was usually *split at the places the walker planned to pause*. On the bundled Tatra route the two junctions land at 1515 m and 1686 m — hut altitudes, not arbitrary waypoints.
