@@ -1,49 +1,39 @@
 /**
- * The routes this build carries.
+ * Routes compiled into the build.
  *
- * Bundled rather than fetched: there is no signal on a trail. When the phone
- * page can load GPX, this list becomes the fallback and the rest comes from
- * storage — `RouteSource` is the shape either way.
+ * These are the fallback when nothing has been imported yet; anything the user
+ * adds lives in storage as the same `RouteRecord` shape. Built-ins cannot be
+ * deleted, only superseded by an import under a different id.
  */
 
 import route11Gpx from '../route_1.1.gpx?raw'
 import route1Gpx from '../route_1.gpx?raw'
+import { parseGpx } from './lib/gpx.ts'
+import type { RouteRecord } from './lib/route-store.ts'
 
-export interface RouteAlternative {
-  /** GPX carrying the alternative. */
-  gpx: string
-  /** Which track in that file, since an export holds several legs. */
-  pathIndex: number
-  /** Short label; the delta is appended, and the firmware caps the pair at 32 bytes. */
-  name: string
-}
+const zawrat = parseGpx(route11Gpx)
+const longApproach = parseGpx(route1Gpx)
 
-export interface RouteSource {
-  /** Stable key. Rest logs and the selected route are stored under it. */
-  id: string
-  name: string
-  gpx: string
-  alternatives?: RouteAlternative[]
-  /** Names for the stops inferred from leg junctions, in order. */
-  stopNames?: string[]
-  /** Rest planned at each stop, seconds. */
-  restSeconds?: number
-}
-
-export const ROUTES: RouteSource[] = [
+export const BUILT_IN_ROUTES: RouteRecord[] = [
   {
     id: 'tatry-zawrat',
     name: 'Kuźnice - Zawrat - Palenica',
-    gpx: route11Gpx,
-    alternatives: [{ gpx: route1Gpx, pathIndex: 0, name: 'Long way' }],
+    // The second way up to Murowaniec rides along as an extra path; it shares
+    // both endpoints with the first leg, so `buildRoute` reads it as an
+    // alternative rather than a continuation.
+    paths: [...zawrat.paths, { ...longApproach.paths[0], name: 'Long way' }],
+    waypoints: zawrat.waypoints,
     stopNames: ['Murowaniec', 'PTTK Pięć Stawów'],
     restSeconds: 15 * 60,
+    builtIn: true,
   },
   {
     id: 'tatry-long',
     name: 'Kuźnice - Palenica (long)',
-    gpx: route1Gpx,
+    paths: longApproach.paths,
+    waypoints: longApproach.waypoints,
     stopNames: ['Murowaniec', 'PTTK Pięć Stawów'],
     restSeconds: 15 * 60,
+    builtIn: true,
   },
 ]

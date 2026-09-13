@@ -41,6 +41,20 @@ Three ways to run it, cheapest first:
 
 `@jappyjan/even-realities-ui` (Badge, Button, Card, Checkbox, Chip, Divider, IconButton, Input, Radio, Select, Switch, Text, Textarea, plus icons and tokens) is **React DOM only** — it renders on the phone page and cannot draw on the glasses. Import its stylesheet from `@jappyjan/even-realities-ui/styles`; `src/globals.d.ts` declares that subpath since it ships no types for it.
 
+## Saving routes
+
+`RouteRecord` is the one shape both surfaces use, whether a route is compiled into the build (`src/routes.ts`, `builtIn: true`) or imported by the user. All of a route's paths live in one list — main legs *and* alternatives — because `buildRoute` already works out which is which.
+
+`src/lib/route-store.ts` persists them over a `KeyValueStore`, which is pure enough to test against an in-memory map. Three properties of the host store shape it:
+
+- **Values are strings** — hence `src/lib/codec.ts`. Never store raw GPX: the 24.6 km route is 155 KB of XML against ~13 KB delta-encoded, and the host's size ceiling is undocumented with no chunking. Coordinates quantise to 1e-5 deg (~1 m), elevation to 1 m, which moves a route's total ascent by a few metres out of ~1700 and its length by well under 0.2%.
+- **There is no delete** — removal blanks the value *and* drops the id from the manifest, manifest first, so a half-finished delete still reads as gone.
+- **Keys cannot be enumerated** — `routes:index` is the manifest that defines the set. A value with no manifest entry is invisible by design.
+
+`parseRoute` returns null rather than throwing, and `loadRoutes` skips unreadable entries, so one corrupt record cannot hide the rest. Decoding stops at the first malformed field rather than continuing, because every point is a delta from the last.
+
+`src/storage.ts` picks the backing store: the host on the glasses, `localStorage` in a browser tab. That is what lets routes be imported and deleted while developing the page with no hardware. Reads await the bridge rather than guessing, so the page cannot read one store while the glasses write another.
+
 ## Multiple routes
 
 `src/routes.ts` holds the bundled routes as `RouteSource` records — id, name, GPX text, optional alternatives, stop names, planned rest. `selectRoute()` in `main.ts` rebuilds every route-dependent value from one of them, so adding a route is one entry in that array.

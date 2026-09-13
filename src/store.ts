@@ -6,12 +6,15 @@
  * with `useSyncExternalStore`; the glasses controller subscribes directly.
  */
 
-import { ROUTES } from './routes.ts'
+import { BUILT_IN_ROUTES } from './routes.ts'
 import type { Rest } from './lib/rests.ts'
+import type { RouteRecord } from './lib/route-store.ts'
 
 export type GlassesStatus = 'connecting' | 'ready' | 'unavailable' | 'failed'
 
 export interface AppState {
+  /** Built-ins first, then anything imported. */
+  routes: RouteRecord[]
   routeId: string
   glasses: GlassesStatus
   /** Populated once the glasses controller has loaded the route's log. */
@@ -19,7 +22,8 @@ export interface AppState {
 }
 
 let state: AppState = {
-  routeId: ROUTES[0].id,
+  routes: BUILT_IN_ROUTES,
+  routeId: BUILT_IN_ROUTES[0].id,
   glasses: 'connecting',
   rests: [],
 }

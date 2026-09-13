@@ -14,7 +14,9 @@ import {
   type AppLocation,
 } from '@evenrealities/even_hub_sdk'
 
-import { ROUTES, type RouteSource } from './routes.ts'
+import type { RouteRecord } from './lib/route-store.ts'
+import { store } from './storage.ts'
+import { provideBridge } from './storage.ts'
 import { modelFor } from './build-route.ts'
 import {
   displayTitle, foldAscii, formatDelta, nextDecision, nextStop,
@@ -79,12 +81,13 @@ export async function startGlasses(): Promise<GlassesStatus> {
 if (!hasEvenAppHost()) return 'unavailable'
 
 const bridge = await waitForEvenAppBridge()
+provideBridge(bridge)
 
 /* ---------- per-route state ---------- */
 
 // All assigned by `selectRoute`, which runs before anything reads them; the
 // assertions are needed because that happens inside an awaited call.
-let source!: RouteSource
+let source!: RouteRecord
 let model!: RouteModel
 let mainCum!: number[]
 let totalM!: number
@@ -107,9 +110,11 @@ const currentSegment = (): Segment | null => (view === 0 ? null : segments[view 
  * Rest logs are keyed by route id, so switching mid-hike parks one log and
  * picks up the other rather than merging two days of walking.
  */
-async function selectRoute(chosen: RouteSource): Promise<void> {
+async function selectRoute(chosen: RouteRecord): Promise<void> {
+  const built = modelFor(chosen)
+  if (built === null) throw new Error(`route ${chosen.id} has no usable paths`)
   source = chosen
-  model = modelFor(chosen)
+  model = built
 
   mainCum = cumulativeDistances(model.main.points)
   totalM = model.mainLength
@@ -117,7 +122,7 @@ async function selectRoute(chosen: RouteSource): Promise<void> {
   viewCount = segments.length > 1 ? segments.length + 1 : 1
 
   restKey = `rests:${chosen.id}`
-  rests = parseRests(await bridge.getLocalStorage(restKey))
+  rests = parseRests(await store.get(restKey))
 
   view = 0
   position = model.main.points[0]
@@ -129,10 +134,13 @@ async function selectRoute(chosen: RouteSource): Promise<void> {
   setState({ routeId: chosen.id, rests })
 }
 
+const routes = () => getState().routes
 const remembered = await bridge.getLocalStorage(SELECTED_KEY)
-await selectRoute(ROUTES.find(r => r.id === remembered)
-  ?? ROUTES.find(r => r.id === getState().routeId)
-  ?? ROUTES[0])
+const initial = routes().find(r => r.id === remembered)
+  ?? routes().find(r => r.id === getState().routeId)
+  ?? routes()[0]
+if (initial === undefined) return 'failed'
+await selectRoute(initial)
 
 /* ---------- formatting ---------- */
 
@@ -324,9 +332,9 @@ async function redraw(force = false): Promise<void> {
 bridge.onEvenHubEvent(async event => {
   // Picking a route from the contextual menu.
   const picked = event.menuItemClickEvent?.itemID
-  if (picked !== undefined && picked >= 1 && picked <= ROUTES.length) {
-    const chosen = ROUTES[picked - 1]
-    if (chosen.id !== source.id) {
+  if (picked !== undefined && picked >= 1 && picked <= routes().length) {
+    const chosen = routes()[picked - 1]
+    if (chosen !== undefined && chosen.id !== source.id) {
       await selectRoute(chosen)
       syncRestTimer()
       await redraw(true)
@@ -361,7 +369,7 @@ bridge.onEvenHubEvent(async event => {
     }, Date.now())
     // Written on every change: a hike outlasts the app, and an interrupted
     // session must not lose the log.
-    void bridge.setLocalStorage(restKey, serializeRests(rests))
+    void store.set(restKey, serializeRests(rests))
     setState({ rests })
     syncRestTimer()
     await redraw(true)
@@ -434,7 +442,7 @@ const result = await bridge.createStartUpPageContainer(new CreateStartUpPageCont
   // unique; the layout never changes between routes, so this is set once and
   // switching is only a text and image update.
   menuObject: new MenuContainerProperty({
-    menuItems: ROUTES.slice(0, 10).map((route, i) => new MenuItemProperty({
+    menuItems: routes().slice(0, 10).map((route: RouteRecord, i: number) => new MenuItemProperty({
       itemName: menuLabel(route.name),
       itemID: i + 1,
     })),
@@ -474,7 +482,7 @@ void bridge.startAppLocationUpdates({ accuracy: AppLocationAccuracy.High, distan
 subscribe(() => {
   const wanted = getState().routeId
   if (wanted === source.id) return
-  const chosen = ROUTES.find(r => r.id === wanted)
+  const chosen = routes().find(r => r.id === wanted)
   if (chosen === undefined) return
   void (async () => {
     await selectRoute(chosen)
