@@ -6,15 +6,27 @@
  * deleted, only superseded by an import under a different id.
  */
 
+import testGpx from '../test.gpx?raw'
 import route11Gpx from '../route_1.1.gpx?raw'
 import route1Gpx from '../route_1.gpx?raw'
 import { parseGpx } from './lib/gpx.ts'
 import type { RouteRecord } from './lib/route-store.ts'
 
+const test = parseGpx(testGpx)
 const zawrat = parseGpx(route11Gpx)
 const longApproach = parseGpx(route1Gpx)
 
 export const BUILT_IN_ROUTES: RouteRecord[] = [
+  {
+    // Short walk near home, for checking the HUD on foot without a mountain.
+    // First in the list so it is the top entry in the glasses menu.
+    id: 'test',
+    name: 'Test route',
+    paths: test.paths,
+    waypoints: test.waypoints,
+    restSeconds: 0,
+    builtIn: true,
+  },
   {
     id: 'tatry-zawrat',
     name: 'Kuźnice - Zawrat - Palenica',
