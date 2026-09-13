@@ -21,36 +21,25 @@ This is **not a web app**. It is an Even Realities smart-glasses app that runs i
 
 `src/main.ts` is the whole app. `app.json` is the glasses-app manifest (package id, entrypoint, permissions, minimum host versions) and is the packaging contract, not build config.
 
-### A plain browser cannot run this; the simulator can
+### Two surfaces, one app
 
-`waitForEvenAppBridge()` only resolves when `window.flutter_inappwebview.callHandler` exists. In a desktop browser it never resolves, so the top-level `await` at the head of `src/main.ts` blocks forever and *nothing* runs. A blank page at `localhost:5173` in Chrome is expected, not a bug.
+`src/main.tsx` renders a **React page into the WebView** (route list, stats, profile, selection) and *then* calls `startGlasses()`, which draws the HUD through SDK container primitives. `src/store.ts` is the state both share; React subscribes with `useSyncExternalStore`, the glasses controller subscribes directly. `modelFor()` builds the route model for both, so they can never disagree about a distance.
 
-Three ways to actually see the app, cheapest first:
+The page renders before and independently of the glasses, which is what makes the phone UI developable in an ordinary browser tab.
+
+**Do not use `waitForEvenAppBridge()` to detect the glasses.** It resolves optimistically even with no host: every later call then logs `[EvenAppBridge] postMessage: Flutter handler not available` and `createStartUpPageContainer` quietly returns `invalid` (1), so the app looks connected and does nothing. `hasEvenAppHost()` in `src/glasses.ts` checks for `window.flutter_inappwebview.callHandler`, which is the only honest signal. `startGlasses()` returns `'unavailable' | 'failed' | 'ready'` accordingly and the page says which.
+
+Three ways to run it, cheapest first:
 
 1. **Node** — `pnpm test`. Everything in `src/lib/` is SDK-free and asserted here, including `toAscii()` previews of the elevation profile.
-2. **Simulator** — `pnpm dev` in one terminal, `pnpm sim` in another. Renders a 576×288 canvas with the real bridge. It also takes `--automation-port <n>` for an HTTP control server, which is the path to automated UI checks.
-3. **Real glasses** — `pnpm dev`, then `pnpm qr` and scan it from the phone app. Requires developer mode: sign in at hub.evenrealities.com/login, then force-quit and reopen the phone app so **Scan QR** appears in the Even Hub tab. Phone and laptop must share a network without AP isolation — that is the usual cause of a scan that never loads. Hot reload works after sideloading.
+2. **Browser** — `pnpm dev`, then open `localhost:5173`. The React page works fully; the glasses report `unavailable`. This is the place to build the phone UI.
+3. **Simulator / real glasses** — `pnpm sim` alongside the dev server, or `pnpm qr` and scan it from the phone app. Sideloading needs developer mode: sign in at hub.evenrealities.com/login, then force-quit and reopen the phone app so **Scan QR** appears in the Even Hub tab. Phone and laptop must share a network without AP isolation — that is the usual cause of a scan that never loads.
 
 `pnpm pack` produces a `.ehpk` from `app.json` + `dist/` for distribution.
 
-### `src/lib/` is deliberately SDK-free
+### The UI library
 
-Geometry, GPX parsing and the route model live in `src/lib/` and import nothing from the SDK. That is what makes them runnable under `node --test`: importing the SDK constructs the bridge as an import side effect, which cannot work outside the WebView. Keep glasses I/O out of that directory and this layer stays testable on a laptop.
-
-## Route model
-
-`buildRoute()` takes the paths from a GPX file and returns one main line plus analysed variants. GPX allows unbounded `<trk>`/`<rte>` elements, so alternatives ship as named siblings in one file — but the format records **no relationship between them**. There is no "this spur leaves at km 4.2 and rejoins at km 7.1".
-
-Two things happen before any of that, both forced by real exports:
-
-1. **`joinLegs()` chains consecutive tracks.** AllTrails splits a custom route at its junctions — one Tatra traverse arrives as three identically-named `<trk>` elements whose endpoints meet exactly. Without chaining, the longest leg becomes the main line and the others are offered as "variants". Only endpoint-to-endpoint contact joins, and only when neither path shadows the other **and neither bridges the other**. That last guard matters: two ways up to the same hut share *both* their endpoints, so the naive end-to-end test sees the far ends touching and chains them into an out-and-back. `bridges()` rejects any path whose two ends both sit on the other — it runs from one point of that line to another, which makes it an alternative, not a continuation.
-2. **`smoothElevation()` runs over every path** — see below.
-
-`analyseVariant()` then returns **one `Variant` per divergence, not one per file**. Two exports of the same traverse shared 91% of their geometry and differed in two separate stretches; reporting only the first and last contact collapsed that to a useless "branches at km 0, rejoins at km 34.6". A divergence is any pair of consecutive contact points whose distance along the variant differs materially from the distance along the main line between them — which catches both a detour that wanders off and returns, and a sparsely-drawn chord that stays near the line while cutting off a long arc.
-
-Significance is measured in **walking time, not distance** (`minDetourSeconds`, default 300). Distance alone cannot rank these: on real data a 0.7 km detour avoiding 265 m of climb saves 35 minutes, while a 0.2 km one avoiding 7 m saves three. Two traces of the same trail disagree by a few minutes from sampling alone, and time is what separates a choice from that noise. A variant touching at only one point is a spur, costed as an out-and-back — distance doubled, and the return leg's climb is the outbound leg's descent.
-
-Consequences worth knowing before changing it. **Elevation needs two defences, not one.** `ascent()` applies hysteresis, but that alone is not enough on a densely-sampled real export: `buildRoute()` first runs `smoothElevation()` over a 150 m distance window. A real AllTrails Tatra traverse (34.6 km, 3167 points, ~8 m spacing) reads 3658 m of climb raw and 2973 m at a 60 m window, against a true ~2500-2700 m — and Naismith charges an hour per 600 m, so the raw figure is two hours of ETA error. Validate any change to these defaults against a prominence count (sum only climbs above ~50 m of prominence); it is structurally independent of smoothing and converges where the smoothing grid does. Off-route distance projects onto segments rather than snapping to vertices, or a coarsely-sampled straight would read as a large deviation. And `variantLabel()` trims the *name*, never the numbers, to fit the firmware's 32-byte menu cap.
+`@jappyjan/even-realities-ui` (Badge, Button, Card, Checkbox, Chip, Divider, IconButton, Input, Radio, Select, Switch, Text, Textarea, plus icons and tokens) is **React DOM only** — it renders on the phone page and cannot draw on the glasses. Import its stylesheet from `@jappyjan/even-realities-ui/styles`; `src/globals.d.ts` declares that subpath since it ships no types for it.
 
 ## Multiple routes
 

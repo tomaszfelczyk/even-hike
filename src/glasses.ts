@@ -15,9 +15,9 @@ import {
 } from '@evenrealities/even_hub_sdk'
 
 import { ROUTES, type RouteSource } from './routes.ts'
-import { parseGpx } from './lib/gpx.ts'
+import { modelFor } from './build-route.ts'
 import {
-  buildRoute, displayTitle, foldAscii, formatDelta, nextDecision, nextStop,
+  displayTitle, foldAscii, formatDelta, nextDecision, nextStop,
   nextWaypoint, plannedRestBefore, progressOn, segmentsOf, stopNear,
   type RouteModel, type Segment,
 } from './lib/route.ts'
@@ -54,6 +54,30 @@ const SELECTED_KEY = 'route:selected'
 /** Firmware cap on a contextual-menu label. */
 const MENU_NAME_BYTES = 32
 
+import { getState, setState, subscribe, type GlassesStatus } from './store.ts'
+
+/**
+ * True when the page is running inside the Even App WebView.
+ *
+ * `waitForEvenAppBridge()` cannot be used for this: it resolves optimistically
+ * in an ordinary browser and every later call then warns "Flutter handler not
+ * available" while `createStartUpPageContainer` quietly returns `invalid`. The
+ * host handler is the only honest signal.
+ */
+export function hasEvenAppHost(): boolean {
+  const host = (globalThis as { flutter_inappwebview?: { callHandler?: unknown } }).flutter_inappwebview
+  return typeof host?.callHandler === 'function'
+}
+
+/**
+ * Attach to the glasses, reporting what actually happened.
+ *
+ * Called without blocking the React page, which is what lets the phone UI be
+ * developed in an ordinary browser tab.
+ */
+export async function startGlasses(): Promise<GlassesStatus> {
+if (!hasEvenAppHost()) return 'unavailable'
+
 const bridge = await waitForEvenAppBridge()
 
 /* ---------- per-route state ---------- */
@@ -84,20 +108,8 @@ const currentSegment = (): Segment | null => (view === 0 ? null : segments[view 
  * picks up the other rather than merging two days of walking.
  */
 async function selectRoute(chosen: RouteSource): Promise<void> {
-  const parsed = parseGpx(chosen.gpx)
-  const alternatives = (chosen.alternatives ?? []).flatMap(alt => {
-    const path = parseGpx(alt.gpx).paths[alt.pathIndex]
-    return path === undefined ? [] : [{ ...path, name: alt.name }]
-  })
-
   source = chosen
-  model = buildRoute([...parsed.paths, ...alternatives], {
-    restSeconds: chosen.restSeconds ?? 0,
-    stopNames: chosen.stopNames,
-    // Sights ride along from the GPX; none until waypoints are added to the
-    // route in AllTrails and it is re-exported.
-    waypoints: parsed.waypoints,
-  })!
+  model = modelFor(chosen)
 
   mainCum = cumulativeDistances(model.main.points)
   totalM = model.mainLength
@@ -114,10 +126,13 @@ async function selectRoute(chosen: RouteSource): Promise<void> {
   lastProfileColumn = -1
 
   void bridge.setLocalStorage(SELECTED_KEY, chosen.id)
+  setState({ routeId: chosen.id, rests })
 }
 
 const remembered = await bridge.getLocalStorage(SELECTED_KEY)
-await selectRoute(ROUTES.find(r => r.id === remembered) ?? ROUTES[0])
+await selectRoute(ROUTES.find(r => r.id === remembered)
+  ?? ROUTES.find(r => r.id === getState().routeId)
+  ?? ROUTES[0])
 
 /* ---------- formatting ---------- */
 
@@ -347,6 +362,7 @@ bridge.onEvenHubEvent(async event => {
     // Written on every change: a hike outlasts the app, and an interrupted
     // session must not lose the log.
     void bridge.setLocalStorage(restKey, serializeRests(rests))
+    setState({ rests })
     syncRestTimer()
     await redraw(true)
     return
@@ -428,10 +444,11 @@ const result = await bridge.createStartUpPageContainer(new CreateStartUpPageCont
 syncRestTimer()
 
 if (result !== StartUpPageCreateResult.success) {
+  // 1 invalid, 2 oversize, 3 out of memory.
   console.error('createStartUpPageContainer failed:', result)
-} else {
-  await pushProfile(true)
+  return 'failed'
 }
+await pushProfile(true)
 
 // A real fix takes over only once it is actually near the route.
 bridge.onAppLocationChanged((location: AppLocation) => {
@@ -452,3 +469,19 @@ bridge.onAppLocationChanged((location: AppLocation) => {
   void redraw()
 })
 void bridge.startAppLocationUpdates({ accuracy: AppLocationAccuracy.High, distanceFilter: 10 })
+
+// The phone page can switch route too; mirror it onto the glasses.
+subscribe(() => {
+  const wanted = getState().routeId
+  if (wanted === source.id) return
+  const chosen = ROUTES.find(r => r.id === wanted)
+  if (chosen === undefined) return
+  void (async () => {
+    await selectRoute(chosen)
+    syncRestTimer()
+    await redraw(true)
+  })()
+})
+
+return 'ready'
+}
